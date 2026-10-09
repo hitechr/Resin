@@ -374,6 +374,7 @@ function normalizeLatencyDistribution(raw: SnapshotNodeLatencyDistribution): Sna
     generated_at: toString(raw.generated_at),
     scope: raw.scope === "platform" ? "platform" : "global",
     platform_id: raw.platform_id ? toString(raw.platform_id) : undefined,
+    region: raw.region ? toString(raw.region).toUpperCase() : undefined,
     bin_width_ms: toNumber(raw.bin_width_ms),
     overflow_ms: toNumber(raw.overflow_ms),
     sample_count: toNumber(raw.sample_count),
@@ -505,15 +506,13 @@ async function getSnapshotPlatformNodePool(platformId: string): Promise<Snapshot
   };
 }
 
-async function getSnapshotLatency(platformId?: string): Promise<SnapshotNodeLatencyDistribution> {
-  if (!platformId) {
-    const data = await apiRequest<SnapshotNodeLatencyDistribution>(`${basePath}/snapshots/node-latency-distribution`);
-    return normalizeLatencyDistribution(data);
-  }
-
-  const query = new URLSearchParams({ platform_id: platformId });
+async function getSnapshotLatency(platformId?: string, region?: string): Promise<SnapshotNodeLatencyDistribution> {
+  const query = new URLSearchParams();
+  if (platformId) query.set("platform_id", platformId);
+  if (region) query.set("region", region);
+  const suffix = query.size ? `?${query.toString()}` : "";
   const data = await apiRequest<SnapshotNodeLatencyDistribution>(
-    `${basePath}/snapshots/node-latency-distribution?${query.toString()}`,
+    `${basePath}/snapshots/node-latency-distribution${suffix}`,
   );
   return normalizeLatencyDistribution(data);
 }
@@ -611,8 +610,8 @@ export async function getDashboardGlobalHistoryData(
   };
 }
 
-export async function getDashboardGlobalSnapshotData(): Promise<DashboardGlobalSnapshotData> {
-  const [snapshot_node_pool, snapshot_latency_global] = await Promise.all([getSnapshotNodePool(), getSnapshotLatency()]);
+export async function getDashboardGlobalSnapshotData(region?: string): Promise<DashboardGlobalSnapshotData> {
+  const [snapshot_node_pool, snapshot_latency_global] = await Promise.all([getSnapshotNodePool(), getSnapshotLatency(undefined, region)]);
   return {
     snapshot_node_pool,
     snapshot_latency_global,

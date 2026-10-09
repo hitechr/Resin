@@ -43,9 +43,13 @@ func (s testPlatformStats) PlatformEgressIPCount(platformID string) (int, bool) 
 type testNodeLatencyProvider struct {
 	global   []float64
 	platform map[string][]float64
+	regions  map[string][]float64
 }
 
-func (p testNodeLatencyProvider) CollectNodeEWMAs(platformID string) []float64 {
+func (p testNodeLatencyProvider) CollectNodeEWMAs(platformID, region string) []float64 {
+	if region != "" {
+		return append([]float64(nil), p.regions[platformID+":"+region]...)
+	}
 	if platformID == "" {
 		return append([]float64(nil), p.global...)
 	}
@@ -100,8 +104,8 @@ type testRuntimeStatsProvider struct {
 	testNodeLatencyData testNodeLatencyProvider
 }
 
-func (p testRuntimeStatsProvider) CollectNodeEWMAs(platformID string) []float64 {
-	return p.testNodeLatencyData.CollectNodeEWMAs(platformID)
+func (p testRuntimeStatsProvider) CollectNodeEWMAs(platformID, region string) []float64 {
+	return p.testNodeLatencyData.CollectNodeEWMAs(platformID, region)
 }
 
 func assertNotFoundError(t *testing.T, rec *httptest.ResponseRecorder) {
@@ -430,6 +434,52 @@ func TestMetricsHandlers_HistoryAccessLatency_SeparatesOverflowBucket(t *testing
 	}
 	if buckets[1].(map[string]any)["le_ms"] != float64(199) {
 		t.Fatalf("bucket[1].le_ms: got %v, want 199", buckets[1].(map[string]any)["le_ms"])
+	}
+}
+
+func TestMetricsHandlers_SnapshotNodeLatencyDistribution_Region(t *testing.T) {
+	mgr := newTestMetricsManagerWithNodeLatency(t, testNodeLatencyProvider{
+		global: []float64{100, 200, 500},
+		regions: map[string][]float64{
+			":jp":                  {100, 200},
+			"existing-platform:jp": {200},
+		},
+	}, "existing-platform")
+
+	for _, tc := range []struct {
+		url        string
+		wantCount  float64
+		wantScope  string
+		wantRegion string
+	}{
+		{"/api/v1/metrics/snapshots/node-latency-distribution?region=jp", 2, "global", "jp"},
+		{"/api/v1/metrics/snapshots/node-latency-distribution?region=JP&platform_id=existing-platform", 1, "platform", "jp"},
+		{"/api/v1/metrics/snapshots/node-latency-distribution", 3, "global", ""},
+	} {
+		rec := httptest.NewRecorder()
+		HandleSnapshotNodeLatencyDistribution(mgr).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.url, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", tc.url, rec.Code, rec.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["sample_count"] != tc.wantCount || body["scope"] != tc.wantScope {
+			t.Errorf("%s: got sample_count=%v scope=%v", tc.url, body["sample_count"], body["scope"])
+		}
+		if tc.wantRegion != "" && body["region"] != tc.wantRegion {
+			t.Errorf("%s: region = %v, want %s", tc.url, body["region"], tc.wantRegion)
+		}
+		if tc.wantRegion == "" && body["region"] != nil {
+			t.Errorf("%s: unexpected region = %v", tc.url, body["region"])
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	HandleSnapshotNodeLatencyDistribution(mgr).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/metrics/snapshots/node-latency-distribution?region=invalid", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid region status = %d, want 400", rec.Code)
 	}
 }
 

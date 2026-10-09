@@ -113,6 +113,7 @@ export type SnapshotNodeLatencyDistribution = {
   generated_at: string;
   scope: "global" | "platform";
   platform_id?: string;
+  region?: string;
   bin_width_ms: number;
   overflow_ms: number;
   sample_count: number;

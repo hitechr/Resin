@@ -14,9 +14,11 @@ import {
   getDashboardGlobalHistoryData,
   getDashboardGlobalRealtimeData,
   getDashboardGlobalSnapshotData,
+  getNodeRegionStats,
 } from "./api";
 import type { DashboardGlobalData, LatencyBucket, TimeWindow } from "./types";
 import { RegionStatsPanels } from "./RegionStatsPanels";
+import { getRegionName } from "../nodes/regions";
 
 type RangeKey = "15m" | "1h" | "6h" | "24h";
 
@@ -714,6 +716,7 @@ function historyRefreshMsFromBuckets(bucketSeconds: Array<number | undefined>): 
 export function DashboardPage() {
   const { t } = useI18n();
   const [rangeKey, setRangeKey] = useState<RangeKey>("6h");
+  const [latencyRegion, setLatencyRegion] = useState("");
   const queryClient = useQueryClient();
 
   const globalRealtimeQuery = useQuery({
@@ -762,10 +765,16 @@ export function DashboardPage() {
   });
 
   const globalSnapshotQuery = useQuery({
-    queryKey: ["dashboard-global-snapshot"],
-    queryFn: getDashboardGlobalSnapshotData,
+    queryKey: ["dashboard-global-snapshot", latencyRegion],
+    queryFn: () => getDashboardGlobalSnapshotData(latencyRegion),
     refetchInterval: SNAPSHOT_REFRESH_MS,
     placeholderData: (prev) => prev,
+  });
+
+  const regionStatsQuery = useQuery({
+    queryKey: ["dashboard-node-region-stats"],
+    queryFn: getNodeRegionStats,
+    refetchInterval: 30_000,
   });
 
   const globalData = useMemo<DashboardGlobalData | undefined>(() => {
@@ -805,7 +814,7 @@ export function DashboardPage() {
     };
   }, [globalRealtimeQuery.data, globalHistoryQuery.data, globalSnapshotQuery.data]);
 
-  const globalError = globalRealtimeQuery.error ?? globalHistoryQuery.error ?? globalSnapshotQuery.error;
+  const globalError = globalRealtimeQuery.error ?? globalHistoryQuery.error ?? globalSnapshotQuery.error ?? regionStatsQuery.error;
   const isInitialLoading =
     !globalData && (globalRealtimeQuery.isLoading || globalHistoryQuery.isLoading || globalSnapshotQuery.isLoading);
 
@@ -882,7 +891,8 @@ export function DashboardPage() {
   const uniqueHealthyEgressIPs = snapshotNodePool?.healthy_egress_ip_count ?? 0;
   const nodeHealthRate = snapshotNodePool ? successRate(snapshotNodePool.total_nodes, snapshotNodePool.healthy_nodes) : 0;
 
-  const activeLatencyHistogram = globalData?.snapshot_latency_global.buckets ?? [];
+  const latencySnapshotMatchesRegion = (globalData?.snapshot_latency_global.region ?? "") === latencyRegion;
+  const activeLatencyHistogram = latencySnapshotMatchesRegion ? globalData?.snapshot_latency_global.buckets ?? [] : [];
 
   return (
     <section className="dashboard-page">
@@ -1037,12 +1047,30 @@ export function DashboardPage() {
         </Card>
 
         <Card className="dashboard-panel span-2">
-          <div className="dashboard-panel-header">
-            <h3>{t("节点延迟分布")}</h3>
-            <p>{t("延迟直方图")}</p>
+          <div className="dashboard-panel-header dashboard-latency-header">
+            <div>
+              <h3>{t("节点延迟分布")}</h3>
+              <p>{t("延迟直方图")}</p>
+            </div>
+            <label className="dashboard-latency-filter">
+              <span>{t("国家/地区")}</span>
+              <Select value={latencyRegion} onChange={(event) => setLatencyRegion(event.target.value)}>
+                <option value="">{t("全部")}</option>
+                {latencyRegion && !regionStatsQuery.data?.items.some((item) => item.region === latencyRegion) ? (
+                  <option value={latencyRegion}>{latencyRegion}</option>
+                ) : null}
+                {regionStatsQuery.data?.items.filter((item) => item.region).map((item) => (
+                  <option key={item.region} value={item.region}>
+                    {item.region} {getRegionName(item.region) ?? ""}
+                  </option>
+                ))}
+              </Select>
+            </label>
           </div>
 
-          <Histogram buckets={activeLatencyHistogram} />
+          {globalSnapshotQuery.isFetching && !latencySnapshotMatchesRegion
+            ? <div className="dashboard-empty">{t("正在加载延迟分布...")}</div>
+            : <Histogram buckets={activeLatencyHistogram} />}
         </Card>
 
         <Card className="dashboard-panel">

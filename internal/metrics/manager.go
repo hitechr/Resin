@@ -24,7 +24,7 @@ type RuntimeStatsProvider interface {
 	LeaseCountsByPlatform() map[string]int
 	RoutableNodeCount(platformID string) (int, bool)
 	PlatformEgressIPCount(platformID string) (int, bool)
-	CollectNodeEWMAs(platformID string) []float64
+	CollectNodeEWMAs(platformID, region string) []float64
 }
 
 // ManagerConfig configures the MetricsManager.

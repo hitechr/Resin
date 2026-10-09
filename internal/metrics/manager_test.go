@@ -32,7 +32,7 @@ func (managerTestRuntimeStats) RoutableNodeCount(string) (int, bool) { return 0,
 func (managerTestRuntimeStats) PlatformEgressIPCount(string) (int, bool) {
 	return 0, false
 }
-func (managerTestRuntimeStats) CollectNodeEWMAs(string) []float64 { return nil }
+func (managerTestRuntimeStats) CollectNodeEWMAs(string, string) []float64 { return nil }
 
 func TestTakeSample_NormalizesThroughputToBPS(t *testing.T) {
 	mgr := NewManager(ManagerConfig{

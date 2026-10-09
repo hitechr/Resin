@@ -575,9 +575,10 @@ func buildAccountMatcher(engine *state.StateEngine) *proxy.AccountMatcherRuntime
 // runtimeStatsAdapter implements metrics.RuntimeStatsProvider using
 // GlobalNodePool + Router.
 type runtimeStatsAdapter struct {
-	pool        *topology.GlobalNodePool
-	router      *routing.Router
-	authorities func() []string
+	pool         *topology.GlobalNodePool
+	router       *routing.Router
+	authorities  func() []string
+	regionLookup func(netip.Addr) string
 }
 
 func (a *runtimeStatsAdapter) TotalNodes() int { return a.pool.Size() }
@@ -662,16 +663,24 @@ func (a *runtimeStatsAdapter) PlatformEgressIPCount(platformID string) (int, boo
 	return len(seen), true
 }
 
-func (a *runtimeStatsAdapter) CollectNodeEWMAs(platformID string) []float64 {
+func (a *runtimeStatsAdapter) CollectNodeEWMAs(platformID, region string) []float64 {
 	authorities := a.authorities()
 	var ewmas []float64
+	appendIfMatched := func(entry *node.NodeEntry) {
+		if region != "" {
+			if !entry.GetEgressIP().IsValid() || !strings.EqualFold(entry.GetRegion(a.regionLookup), region) {
+				return
+			}
+		}
+		if avg, ok := node.AverageEWMAForDomainsMs(entry, authorities); ok {
+			ewmas = append(ewmas, avg)
+		}
+	}
 
 	if platformID == "" {
 		// Global: iterate all nodes.
 		a.pool.RangeNodes(func(_ node.Hash, entry *node.NodeEntry) bool {
-			if avg, ok := node.AverageEWMAForDomainsMs(entry, authorities); ok {
-				ewmas = append(ewmas, avg)
-			}
+			appendIfMatched(entry)
 			return true
 		})
 	} else {
@@ -683,9 +692,7 @@ func (a *runtimeStatsAdapter) CollectNodeEWMAs(platformID string) []float64 {
 		plat.View().Range(func(h node.Hash) bool {
 			entry, ok := a.pool.GetEntry(h)
 			if ok {
-				if avg, ok := node.AverageEWMAForDomainsMs(entry, authorities); ok {
-					ewmas = append(ewmas, avg)
-				}
+				appendIfMatched(entry)
 			}
 			return true
 		})

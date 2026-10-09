@@ -303,8 +303,9 @@ func (a *resinApp) initObservability() error {
 		LeasesRealtimeCapacity:      metricsCfg.LeasesRealtimeCapacity,
 		LeasesIntervalSec:           metricsCfg.LeasesIntervalSec,
 		RuntimeStats: &runtimeStatsAdapter{
-			pool:   a.topoRuntime.pool,
-			router: a.topoRuntime.router,
+			pool:         a.topoRuntime.pool,
+			router:       a.topoRuntime.router,
+			regionLookup: a.geoSvc.Lookup,
 			authorities: func() []string {
 				return runtimeConfigSnapshot(a.runtimeCfg).LatencyAuthorities
 			},

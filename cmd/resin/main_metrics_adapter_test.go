@@ -11,6 +11,48 @@ import (
 	"github.com/Resinat/Resin/internal/testutil"
 )
 
+func TestNodePoolStatsAdapter_CollectNodeEWMAsByRegion(t *testing.T) {
+	_, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
+	adapter := &runtimeStatsAdapter{
+		pool:        pool,
+		authorities: func() []string { return []string{"example.com"} },
+		regionLookup: func(ip netip.Addr) string {
+			if ip.String() == "203.0.113.2" {
+				return "jp"
+			}
+			return "us"
+		},
+	}
+	for i, tc := range []struct {
+		ip     string
+		region string
+		ms     int
+	}{
+		{"203.0.113.1", "jp", 100},
+		{"203.0.113.2", "", 200},
+		{"203.0.113.3", "us", 300},
+		{"", "jp", 400},
+	} {
+		raw := []byte{byte(i)}
+		entry := node.NewNodeEntry(node.HashFromRawOptions(raw), raw, time.Now(), 16)
+		if tc.ip != "" {
+			entry.SetEgressIP(netip.MustParseAddr(tc.ip))
+		}
+		entry.SetEgressRegion(tc.region)
+		entry.LatencyTable.LoadEntry("example.com", node.DomainLatencyStats{Ewma: time.Duration(tc.ms) * time.Millisecond, LastUpdated: time.Now()})
+		pool.LoadNodeFromBootstrap(entry)
+	}
+	if got := adapter.CollectNodeEWMAs("", "jp"); len(got) != 2 || got[0]+got[1] != 300 {
+		t.Fatalf("JP EWMAs = %v, want 100 and 200", got)
+	}
+	if got := adapter.CollectNodeEWMAs("", "us"); len(got) != 1 || got[0] != 300 {
+		t.Fatalf("US EWMAs = %v, want 300", got)
+	}
+	if got := adapter.CollectNodeEWMAs("", ""); len(got) != 4 {
+		t.Fatalf("global EWMAs = %v, want all 4", got)
+	}
+}
+
 func TestNodePoolStatsAdapter_HealthyNodesRequiresOutbound(t *testing.T) {
 	subMgr, pool := newBootstrapTestRuntime(config.NewDefaultRuntimeConfig())
 	adapter := &runtimeStatsAdapter{pool: pool}

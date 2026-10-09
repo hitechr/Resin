@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Resinat/Resin/internal/metrics"
@@ -509,6 +510,11 @@ func HandleSnapshotPlatformNodePool(mgr *metrics.Manager) http.Handler {
 func HandleSnapshotNodeLatencyDistribution(mgr *metrics.Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		platformID := r.URL.Query().Get("platform_id")
+		region := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("region")))
+		if region != "" && (len(region) != 2 || region[0] < 'a' || region[0] > 'z' || region[1] < 'a' || region[1] > 'z') {
+			writeInvalidArgument(w, "region: must be a two-letter country code")
+			return
+		}
 		scope := "global"
 		if platformID != "" {
 			scope = "platform"
@@ -537,7 +543,7 @@ func HandleSnapshotNodeLatencyDistribution(mgr *metrics.Manager) http.Handler {
 			regularBins = 1
 		}
 
-		ewmas := stats.CollectNodeEWMAs(platformID)
+		ewmas := stats.CollectNodeEWMAs(platformID, region)
 
 		// Build histogram from EWMA values.
 		bucketCounts := make([]int64, regularBins)
@@ -573,6 +579,9 @@ func HandleSnapshotNodeLatencyDistribution(mgr *metrics.Manager) http.Handler {
 		}
 		if platformID != "" {
 			resp["platform_id"] = platformID
+		}
+		if region != "" {
+			resp["region"] = region
 		}
 
 		WriteJSON(w, http.StatusOK, resp)
