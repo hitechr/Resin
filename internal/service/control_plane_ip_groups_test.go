@@ -79,6 +79,30 @@ func TestNodeIPGroupDetailTracksChangedIP(t *testing.T) {
 	}
 }
 
+func TestNodeIPGroupsRegionUsesMajorityMemberRegion(t *testing.T) {
+	nodes := []NodeSummary{
+		{EgressIP: "8.8.8.8", Region: "us"},
+		{EgressIP: "8.8.8.8", Region: "US"},
+		{EgressIP: "8.8.8.8", Region: "ca"},
+		{EgressIP: "1.1.1.1", Region: "jp"},
+		{EgressIP: "9.9.9.9"},
+		{},
+	}
+	byKey := make(map[string]NodeIPGroup)
+	for _, group := range projectNodeIPGroups(nodes, nil) {
+		byKey[group.Key] = group
+	}
+	if byKey["8.8.8.8"].Region != "US" {
+		t.Fatalf("majority region: %+v", byKey["8.8.8.8"])
+	}
+	if byKey["1.1.1.1"].Region != "JP" {
+		t.Fatalf("single member region: %+v", byKey["1.1.1.1"])
+	}
+	if byKey["9.9.9.9"].Region != "" || byKey[UnresolvedIPGroupKey].Region != "" {
+		t.Fatalf("unknown regions must stay empty: %+v %+v", byKey["9.9.9.9"], byKey[UnresolvedIPGroupKey])
+	}
+}
+
 func TestNodeIPGroupsLargeSharedIPCollapsesBeforePagination(t *testing.T) {
 	nodes := make([]NodeSummary, 1201)
 	for i := range nodes[:1200] {

@@ -19,6 +19,7 @@ export type NodeIPQuality = {
 export type NodeIPGroup = {
   key: string;
   ip: string;
+  region: string;
   matched_node_count: number;
   score: number | null;
   risk: number | null;
@@ -63,7 +64,7 @@ export type NodeIPBatchJob = {
   error_summary?: string;
 };
 
-export type NodeIPGroupSortBy = "ip" | "risk" | "score" | "matched_nodes";
+export type NodeIPGroupSortBy = "ip" | "risk" | "score" | "matched_nodes" | "region";
 
 export type IPGroupListQuery = NodeListFilters & {
   sort_by?: NodeIPGroupSortBy;

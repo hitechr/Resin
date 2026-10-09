@@ -37,6 +37,14 @@ func TestNodeIPGroupsFilteredListSortBeforePaginationAndDetails(t *testing.T) {
 	if body["total"] != float64(3) || body["public_ip_count"] != float64(2) || len(items) != 1 || items[0].(map[string]any)["ip"] != "1.1.1.1" {
 		t.Fatalf("filtered sorted page: %s", rec.Body.String())
 	}
+	rec = doJSONRequest(t, srv, http.MethodGet, path+"&sort_by=region&sort_order=desc&limit=1", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("region sort: %d %s", rec.Code, rec.Body.String())
+	}
+	items = decodeJSONMap(t, rec)["items"].([]any)
+	if items[0].(map[string]any)["region"] != "US" {
+		t.Fatalf("group rows must expose aggregated region: %s", rec.Body.String())
+	}
 	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/node-ip-groups/8.8.8.8?subscription_id="+subA.ID+"&limit=1", nil, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("detail: %d %s", rec.Code, rec.Body.String())

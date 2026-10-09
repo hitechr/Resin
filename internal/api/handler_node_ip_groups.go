@@ -33,7 +33,7 @@ func HandleListNodeIPGroups(cp *service.ControlPlaneService) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		sorting, ok := parseSortingOrWriteInvalid(w, r, []string{"ip", "risk", "score", "matched_nodes"}, "risk", "desc")
+		sorting, ok := parseSortingOrWriteInvalid(w, r, []string{"ip", "risk", "score", "matched_nodes", "region"}, "risk", "desc")
 		if !ok {
 			return
 		}

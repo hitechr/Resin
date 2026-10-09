@@ -545,6 +545,17 @@ export function NodesPage() {
       header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("ip")}>{t("出口 IP")} <span>{sortIndicator(sortBy === "ip", sortOrder)}</span></button>,
       cell: (info) => <button type="button" className="ip-group-address-btn" onClick={(event) => { event.stopPropagation(); openGroup(info.row.original.key); }}>{info.getValue() || t("未解析出口 IP")}</button>,
     }),
+    col.accessor("region", {
+      header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("region")}>{t("区域")} <span>{sortIndicator(sortBy === "region", sortOrder)}</span></button>,
+      cell: (info) => {
+        const val = regionToFlag(info.getValue());
+        return (
+          <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
+            {val}
+          </div>
+        );
+      },
+    }),
     col.accessor("matched_node_count", {
       header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("matched_nodes")}>{t("匹配节点数")} <span>{sortIndicator(sortBy === "matched_nodes", sortOrder)}</span></button>,
     }),

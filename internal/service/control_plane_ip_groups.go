@@ -14,6 +14,7 @@ const UnresolvedIPGroupKey = "unresolved"
 type NodeIPGroup struct {
 	Key              string     `json:"key"`
 	IP               string     `json:"ip"`
+	Region           string     `json:"region"`
 	MatchedNodeCount int        `json:"matched_node_count"`
 	Score            *float64   `json:"score"`
 	Risk             *float64   `json:"risk"`
@@ -34,6 +35,7 @@ func nodeIPGroupKey(raw string) string {
 
 func projectNodeIPGroups(nodes []NodeSummary, cached func(string) (ipquality.Result, bool, bool)) []NodeIPGroup {
 	byIP := make(map[string]*NodeIPGroup)
+	regionVotes := make(map[string]map[string]int)
 	for _, n := range nodes {
 		key := nodeIPGroupKey(n.EgressIP)
 		group := byIP[key]
@@ -62,12 +64,37 @@ func projectNodeIPGroups(nodes []NodeSummary, cached func(string) (ipquality.Res
 			byIP[key] = group
 		}
 		group.MatchedNodeCount++
+		if region := strings.ToUpper(strings.TrimSpace(n.Region)); region != "" {
+			votes := regionVotes[key]
+			if votes == nil {
+				votes = make(map[string]int)
+				regionVotes[key] = votes
+			}
+			votes[region]++
+		}
 	}
 	groups := make([]NodeIPGroup, 0, len(byIP))
 	for _, group := range byIP {
+		if region, ok := majorityRegion(regionVotes[group.Key]); ok {
+			group.Region = region
+		}
 		groups = append(groups, *group)
 	}
 	return groups
+}
+
+// majorityRegion picks the most common member region; ties break by region code.
+func majorityRegion(votes map[string]int) (string, bool) {
+	best, bestCount := "", 0
+	for region, count := range votes {
+		if count > bestCount || (count == bestCount && region < best) {
+			best, bestCount = region, count
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
 }
 
 func (s *ControlPlaneService) ListNodeIPGroups(filters NodeFilters) ([]NodeIPGroup, error) {
@@ -186,6 +213,8 @@ func SortNodeIPGroups(groups []NodeIPGroup, sortBy, order string) {
 			comparison = compareKnownFloat(a.Score, b.Score, order)
 		case "matched_nodes":
 			comparison = cmp.Compare(a.MatchedNodeCount, b.MatchedNodeCount)
+		case "region":
+			comparison = strings.Compare(a.Region, b.Region)
 		case "ip":
 			comparison = strings.Compare(a.IP, b.IP)
 		}
