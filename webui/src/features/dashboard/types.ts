@@ -120,6 +120,20 @@ export type SnapshotNodeLatencyDistribution = {
   overflow_count: number;
 };
 
+export type NodeRegionStat = {
+  region: string;
+  total_ips: number;
+  available_ips: number;
+  sampled_nodes: number;
+  low_latency_nodes: number;
+};
+
+export type NodeRegionStatsSnapshot = {
+  generated_at: string;
+  country_count: number;
+  items: NodeRegionStat[];
+};
+
 export type DashboardGlobalData = {
   realtime_throughput: RealtimeSeriesResponse<RealtimeThroughputItem>;
   realtime_connections: RealtimeSeriesResponse<RealtimeConnectionsItem>;

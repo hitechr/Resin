@@ -2,6 +2,7 @@ import { apiRequest } from "../../lib/api-client";
 import type {
   DashboardGlobalData,
   DashboardPlatformData,
+  NodeRegionStatsSnapshot,
   HistoryAccessLatencyResponse,
   HistoryLeaseLifetimeResponse,
   HistoryResponse,
@@ -21,6 +22,10 @@ import type {
 } from "./types";
 
 const basePath = "/api/v1/metrics";
+
+export function getNodeRegionStats(): Promise<NodeRegionStatsSnapshot> {
+  return apiRequest<NodeRegionStatsSnapshot>("/api/v1/nodes/stats/regions");
+}
 
 function withWindow(path: string, window: TimeWindow, params?: Record<string, string>): string {
   const query = new URLSearchParams({

@@ -1177,6 +1177,133 @@ a {
   grid-column: span 2;
 }
 
+.dashboard-region-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.region-stats-panel {
+  min-width: 0;
+  gap: 8px;
+}
+
+.region-stats-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.region-stats-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.region-stats-heading span, .region-stats-labels {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.region-stats-labels, .region-stats-row {
+  display: grid;
+  grid-template-columns: minmax(76px, 1fr) minmax(0, 1.2fr) 62px;
+  gap: 4px 8px;
+  align-items: center;
+}
+
+.region-stats-row {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.region-stats-country {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.region-stats-country strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.region-stats-flag {
+  font-size: 18px;
+  line-height: 1;
+  flex: none;
+}
+
+.region-stats-count, .region-stats-percent {
+  font-variant-numeric: tabular-nums;
+}
+
+.region-stats-count {
+  overflow-wrap: anywhere;
+}
+
+.region-stats-percent {
+  text-align: right;
+  font-weight: 600;
+}
+
+.region-stats-labels span:last-child {
+  text-align: right;
+}
+
+.region-stats-track {
+  grid-column: 1 / -1;
+  height: 5px;
+  border-radius: 3px;
+  background: #e5eaf0;
+  overflow: hidden;
+}
+
+.region-stats-fill {
+  display: block;
+  height: 100%;
+  background: #159d72;
+}
+
+.region-stats-fill.latency {
+  background: #d48b35;
+}
+
+.region-stats-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 5px 2px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.region-stats-toggle:hover, .region-stats-toggle:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.region-stats-remainder {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.region-stats-state {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 12px 0;
+}
+
+
 .dashboard-panel-header h3 {
   margin: 0;
   font-size: 16px;
@@ -3295,6 +3422,10 @@ a {
 }
 
 @media (max-width: 760px) {
+  .dashboard-region-grid {
+    grid-template-columns: 1fr;
+  }
+
   .main {
     padding: 14px;
   }

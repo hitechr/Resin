@@ -215,6 +215,97 @@ func TestHandleListNodes_IncludesReferenceLatencyMs(t *testing.T) {
 	}
 }
 
+func TestSummarizeNodeRegions(t *testing.T) {
+	latency := func(ms float64) *float64 { return &ms }
+	openSince := "2026-01-01T00:00:00Z"
+	nodes := []service.NodeSummary{
+		{Region: "us", EgressIP: "1.1.1.1", Enabled: true, HasOutbound: true, ReferenceLatencyMs: latency(400)},
+		{Region: "US", EgressIP: "1.1.1.1", Enabled: true, HasOutbound: true, ReferenceLatencyMs: latency(500)},
+		{Region: "us", EgressIP: "1.1.1.2", Enabled: true, HasOutbound: true},
+		{Region: "us", EgressIP: "1.1.1.3", Enabled: false, HasOutbound: true, ReferenceLatencyMs: latency(5)},
+		{Region: "jp", EgressIP: "2.2.2.2", Enabled: true, HasOutbound: true, ReferenceLatencyMs: latency(800)},
+		{Region: "jp", EgressIP: "2.2.2.3", Enabled: true, HasOutbound: false, ReferenceLatencyMs: latency(20)},
+		{Region: "jp", EgressIP: "2.2.2.4", Enabled: true, HasOutbound: true, CircuitOpenSince: &openSince, ReferenceLatencyMs: latency(20)},
+		{Region: "de", EgressIP: "3.3.3.3", Enabled: true, HasOutbound: true},
+		{Region: "", EgressIP: "4.4.4.4", Enabled: true, HasOutbound: true},
+		{Region: "", EgressIP: "", Enabled: true, HasOutbound: true},
+		{Region: "fr", EgressIP: "", Enabled: true, HasOutbound: true, ReferenceLatencyMs: latency(10)},
+	}
+
+	stats := summarizeNodeRegions(nodes)
+	if len(stats) != 5 {
+		t.Fatalf("regions: got %d, want 5: %+v", len(stats), stats)
+	}
+	assert := func(code string, total, available, sampled, low int) {
+		t.Helper()
+		for _, row := range stats {
+			if row.Region == code {
+				if row.TotalIPs != total || row.AvailableIPs != available || row.SampledNodes != sampled || row.LowLatencyNodes != low {
+					t.Errorf("%s: got %+v, want IPs %d/%d sampled %d low %d", code, row, available, total, sampled, low)
+				}
+				return
+			}
+		}
+		t.Errorf("region %s not found", code)
+	}
+	assert("US", 3, 2, 2, 1)
+	assert("JP", 3, 1, 1, 0)
+	assert("DE", 1, 1, 0, 0)
+	assert("", 1, 1, 0, 0)
+	assert("FR", 0, 0, 1, 1)
+}
+
+func TestHandleNodeRegionStats_Empty(t *testing.T) {
+	srv, _, _ := newControlPlaneTestServer(t)
+	rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/stats/regions", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("region stats status: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeJSONMap(t, rec)
+	if body["country_count"] != float64(0) {
+		t.Fatalf("country_count: got %v, want 0", body["country_count"])
+	}
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 0 {
+		t.Fatalf("items: got %v, want empty array", body["items"])
+	}
+}
+
+func TestHandleNodeRegionStats_Populated(t *testing.T) {
+	srv, cp, runtimeCfg := newControlPlaneTestServer(t)
+	cfg := config.NewDefaultRuntimeConfig()
+	cfg.LatencyAuthorities = []string{"example.com"}
+	runtimeCfg.Store(cfg)
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+	raw := `{"type":"ss","server":"1.1.1.1","port":443}`
+	addNodeForNodeListTest(t, cp, sub, raw, "203.0.113.10")
+	markNodeHealthyForNodeListTest(t, cp, raw)
+	entry, ok := cp.Pool.GetEntry(node.HashFromRawOptions([]byte(raw)))
+	if !ok {
+		t.Fatal("node missing after add")
+	}
+	entry.SetEgressRegion("JP")
+	entry.LatencyTable.LoadEntry("example.com", node.DomainLatencyStats{Ewma: 400 * time.Millisecond, LastUpdated: time.Now()})
+
+	rec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes/stats/regions", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("region stats status: got %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeJSONMap(t, rec)
+	if body["country_count"] != float64(1) {
+		t.Fatalf("country_count: got %v, want 1", body["country_count"])
+	}
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items: got %v, want one region", body["items"])
+	}
+	item := items[0].(map[string]any)
+	if item["region"] != "JP" || item["total_ips"] != float64(1) || item["available_ips"] != float64(1) || item["sampled_nodes"] != float64(1) || item["low_latency_nodes"] != float64(1) {
+		t.Fatalf("region stats: got %v", item)
+	}
+}
+
 func TestHandleProbeEgress_ReturnsRegion(t *testing.T) {
 	srv, cp, _ := newControlPlaneTestServer(t)
 

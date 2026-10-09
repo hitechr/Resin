@@ -16,6 +16,7 @@ import {
   getDashboardGlobalSnapshotData,
 } from "./api";
 import type { DashboardGlobalData, LatencyBucket, TimeWindow } from "./types";
+import { RegionStatsPanels } from "./RegionStatsPanels";
 
 type RangeKey = "15m" | "1h" | "6h" | "24h";
 
@@ -1142,6 +1143,8 @@ export function DashboardPage() {
         </Card>
 
       </div>
+
+      <RegionStatsPanels />
 
       {isInitialLoading ? (
         <div className="callout callout-warning">

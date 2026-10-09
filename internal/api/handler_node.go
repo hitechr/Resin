@@ -173,6 +173,97 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 	}
 }
 
+type nodeRegionStats struct {
+	Region          string `json:"region"`
+	TotalIPs        int    `json:"total_ips"`
+	AvailableIPs    int    `json:"available_ips"`
+	SampledNodes    int    `json:"sampled_nodes"`
+	LowLatencyNodes int    `json:"low_latency_nodes"`
+}
+
+type regionIPCounts struct {
+	stats     nodeRegionStats
+	all       map[string]struct{}
+	available map[string]struct{}
+}
+
+func summarizeNodeRegions(nodes []service.NodeSummary) []nodeRegionStats {
+	byRegion := make(map[string]*regionIPCounts)
+	for _, n := range nodes {
+		region := strings.ToUpper(strings.TrimSpace(n.Region))
+		if len(region) != 2 || region[0] < 'A' || region[0] > 'Z' || region[1] < 'A' || region[1] > 'Z' {
+			region = ""
+		}
+		if region == "" && n.EgressIP == "" {
+			continue
+		}
+		bucket := byRegion[region]
+		if bucket == nil {
+			bucket = &regionIPCounts{
+				stats:     nodeRegionStats{Region: region},
+				all:       make(map[string]struct{}),
+				available: make(map[string]struct{}),
+			}
+			byRegion[region] = bucket
+		}
+		if n.EgressIP != "" {
+			bucket.all[n.EgressIP] = struct{}{}
+		}
+		if !n.IsHealthyAndEnabled() {
+			continue
+		}
+		if n.EgressIP != "" {
+			bucket.available[n.EgressIP] = struct{}{}
+		}
+		if n.ReferenceLatencyMs != nil && !math.IsNaN(*n.ReferenceLatencyMs) && !math.IsInf(*n.ReferenceLatencyMs, 0) {
+			bucket.stats.SampledNodes++
+			if *n.ReferenceLatencyMs <= 400 {
+				bucket.stats.LowLatencyNodes++
+			}
+		}
+	}
+
+	result := make([]nodeRegionStats, 0, len(byRegion))
+	for _, bucket := range byRegion {
+		bucket.stats.TotalIPs = len(bucket.all)
+		bucket.stats.AvailableIPs = len(bucket.available)
+		result = append(result, bucket.stats)
+	}
+	slices.SortFunc(result, func(a, b nodeRegionStats) int {
+		if n := cmp.Compare(b.AvailableIPs, a.AvailableIPs); n != 0 {
+			return n
+		}
+		if n := cmp.Compare(b.TotalIPs, a.TotalIPs); n != 0 {
+			return n
+		}
+		return strings.Compare(a.Region, b.Region)
+	})
+	return result
+}
+
+// HandleNodeRegionStats returns a compact global node-region snapshot.
+func HandleNodeRegionStats(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		nodes, err := cp.ListNodes(service.NodeFilters{})
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		items := summarizeNodeRegions(nodes)
+		countryCount := 0
+		for _, item := range items {
+			if item.Region != "" {
+				countryCount++
+			}
+		}
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"generated_at":  formatTimestamp(time.Now()),
+			"country_count": countryCount,
+			"items":         items,
+		})
+	}
+}
+
 // HandleGetNode returns a handler for GET /api/v1/nodes/{hash}.
 func HandleGetNode(cp *service.ControlPlaneService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
