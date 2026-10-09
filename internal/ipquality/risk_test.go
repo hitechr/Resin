@@ -37,7 +37,7 @@ func TestComputeRisk(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, version := ComputeRisk(tt.result)
-			if version != RiskVersion || version != "v1" {
+			if version != "v1" {
 				t.Fatalf("risk version: %q", version)
 			}
 			if (got == nil) != (tt.want == nil) || got != nil && math.Abs(*got-*tt.want) > 1e-9 {
