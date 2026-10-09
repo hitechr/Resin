@@ -33,11 +33,11 @@ export function NodeIPQualityPanel({ node }: { node: NodeSummary }) {
     },
   });
   const data = query.data;
+  const error = check.error;
   const changedIP = error instanceof ApiError && error.code === "EGRESS_IP_CHANGED";
-  const quality = !changedIP && data?.egress_ip === node.egress_ip ? data.quality : undefined;
+  const quality = !changedIP && data && data.egress_ip === node.egress_ip ? data.quality : undefined;
   const lastObserved = !node.enabled || !node.has_outbound;
   const state = data?.state;
-  const error = check.error;
   const errorLabel = error instanceof ApiError ? ({
     EGRESS_IP_CHANGED: t("出口 IP 已变化，请刷新节点详情"),
     NO_EGRESS_IP: t("没有可检查的公共出口 IP"),
