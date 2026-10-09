@@ -1,24 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Globe2 } from "lucide-react";
+import { ArrowDown, ArrowDownUp, ArrowUp, Globe2 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
-import { Select } from "../../components/ui/Select";
 import { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
 import { getRegionName } from "../nodes/regions";
 import { getNodeRegionStats } from "./api";
 import type { NodeRegionStat } from "./types";
-
-type SortField = "available_ratio" | "available_ips" | "total_ips" | "low_latency_nodes" | "low_latency_ratio";
+import { sortRegionStats, toggleRegionSort, type RegionSort, type RegionSortField } from "./regionSorting";
 
 const EMPTY_REGION_ROWS: NodeRegionStat[] = [];
-const SORT_FIELDS: { value: SortField; label: string }[] = [
-  { value: "available_ratio", label: "可用占比" },
-  { value: "available_ips", label: "可用 IP" },
-  { value: "total_ips", label: "总 IP" },
-  { value: "low_latency_nodes", label: "低延迟节点" },
-  { value: "low_latency_ratio", label: "低延迟占比" },
+const COLUMNS: { field: RegionSortField; label: string }[] = [
+  { field: "region", label: "国家/地区" },
+  { field: "available_ips", label: "可用 IP" },
+  { field: "total_ips", label: "总 IP" },
+  { field: "low_latency_nodes", label: "低延迟 / 样本" },
+  { field: "available_ratio", label: "可用占比" },
+  { field: "low_latency_ratio", label: "低延迟占比" },
 ];
 
 function flagFor(code: string): string {
@@ -28,12 +26,6 @@ function flagFor(code: string): string {
 
 function ratio(numerator: number, denominator: number): number {
   return denominator > 0 ? numerator / denominator : 0;
-}
-
-function sortValue(row: NodeRegionStat, field: SortField): number {
-  if (field === "available_ratio") return ratio(row.available_ips, row.total_ips);
-  if (field === "low_latency_ratio") return ratio(row.low_latency_nodes, row.sampled_nodes);
-  return row[field];
 }
 
 function Country({ code }: { code: string }) {
@@ -85,8 +77,7 @@ function RegionRow({ row }: { row: NodeRegionStat }) {
 
 export function RegionStatsPanels() {
   const { t } = useI18n();
-  const [sortBy, setSortBy] = useState<SortField>("available_ips");
-  const [ascending, setAscending] = useState(false);
+  const [sorting, setSorting] = useState<RegionSort[]>([{ field: "available_ips", descending: true }]);
   const query = useQuery({
     queryKey: ["dashboard-node-region-stats"],
     queryFn: getNodeRegionStats,
@@ -94,16 +85,7 @@ export function RegionStatsPanels() {
     placeholderData: (previous) => previous,
   });
   const rows = query.data?.items ?? EMPTY_REGION_ROWS;
-  const sorted = useMemo(() => [...rows].sort((a, b) => {
-    if (!a.region) return b.region ? 1 : 0;
-    if (!b.region) return -1;
-    if (sortBy === "low_latency_ratio") {
-      if (!a.sampled_nodes) return b.sampled_nodes ? 1 : a.region.localeCompare(b.region);
-      if (!b.sampled_nodes) return -1;
-    }
-    const diff = sortValue(a, sortBy) - sortValue(b, sortBy);
-    return (ascending ? diff : -diff) || a.region.localeCompare(b.region);
-  }), [rows, sortBy, ascending]);
+  const sorted = useMemo(() => sortRegionStats(rows, sorting), [rows, sorting]);
 
   return (
     <Card className="dashboard-panel region-stats-panel">
@@ -114,22 +96,33 @@ export function RegionStatsPanels() {
         </div>
         <span>{t("共 {{count}} 个国家/地区", { count: query.data?.country_count ?? 0 })}</span>
       </div>
-      <div className="region-stats-controls">
-        <label htmlFor="region-sort">{t("排序")}</label>
-        <Select id="region-sort" value={sortBy} onChange={(event) => setSortBy(event.target.value as SortField)}>
-          {SORT_FIELDS.map((option) => <option key={option.value} value={option.value}>{t(option.label)}</option>)}
-        </Select>
-        <Button variant="ghost" size="sm" className="region-stats-direction" onClick={() => setAscending(!ascending)} title={t(ascending ? "升序" : "降序")} aria-label={t(ascending ? "升序，点击切换为降序" : "降序，点击切换为升序")}>
-          {ascending ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
-        </Button>
-      </div>
-      <div className="region-stats-labels" aria-hidden="true">
-        <span>{t("国家/地区")}</span>
-        <span>{t("可用 IP")}</span>
-        <span>{t("总 IP")}</span>
-        <span>{t("低延迟 / 样本")}</span>
-        <span>{t("可用占比")}</span>
-        <span>{t("低延迟占比")}</span>
+      <div className="region-stats-labels">
+        {COLUMNS.map(({ field, label }) => {
+          const priority = sorting.findIndex((item) => item.field === field);
+          const active = sorting[priority];
+          return (
+            <button
+              key={field}
+              type="button"
+              className={active ? "region-stats-sort-active" : ""}
+              onClick={(event) => {
+                const append = event.shiftKey;
+                setSorting((current) => toggleRegionSort(current, field, append));
+              }}
+              aria-pressed={Boolean(active)}
+              aria-label={active
+                ? `${t(label)}，${t("第 {{count}} 优先级", { count: priority + 1 })}，${t(active.descending ? "降序" : "升序")}`
+                : t(label)}
+              title={t("单击排序，Shift 点击追加排序")}
+            >
+              <span className="region-stats-sort-label">{t(label)}</span>
+              <span className="region-stats-sort-indicator" aria-hidden="true">
+                {active ? (active.descending ? <ArrowDown size={14} /> : <ArrowUp size={14} />) : <ArrowDownUp size={14} />}
+                {active && sorting.length > 1 ? <small>{priority + 1}</small> : null}
+              </span>
+            </button>
+          );
+        })}
       </div>
       <div className="region-stats-rows" role="region" aria-label={t("节点国家分布")} tabIndex={0}>
         {query.error ? <p className="region-stats-state" role="alert">{formatApiErrorMessage(query.error, t)}</p> : query.isPending ? (
