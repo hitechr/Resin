@@ -29,6 +29,8 @@ type SubscriptionScheduler struct {
 
 	// For persistence.
 	onSubUpdated func(sub *subscription.Subscription)
+	// Notifies only after a refresh was successfully applied.
+	onSubApplied func(sub *subscription.Subscription)
 	// onSubReenabledNode is called for each non-evicted node hash when a
 	// subscription transitions from disabled to enabled.
 	onSubReenabledNode func(hash node.Hash)
@@ -44,6 +46,7 @@ type SchedulerConfig struct {
 	Downloader   netutil.Downloader               // shared downloader
 	Fetcher      func(url string) ([]byte, error) // optional, defaults to Downloader.Download
 	OnSubUpdated func(sub *subscription.Subscription)
+	OnSubApplied func(sub *subscription.Subscription)
 	// OnSubReenabledNode is fired after false->true enabled transition.
 	OnSubReenabledNode func(hash node.Hash)
 }
@@ -58,6 +61,7 @@ func NewSubscriptionScheduler(cfg SchedulerConfig) *SubscriptionScheduler {
 		downloadCtx:        downloadCtx,
 		cancelDownload:     cancelDownload,
 		onSubUpdated:       cfg.OnSubUpdated,
+		onSubApplied:       cfg.OnSubApplied,
 		onSubReenabledNode: cfg.OnSubReenabledNode,
 		stopCh:             make(chan struct{}),
 	}
@@ -67,6 +71,11 @@ func NewSubscriptionScheduler(cfg SchedulerConfig) *SubscriptionScheduler {
 		sched.Fetcher = sched.fetchViaDownloader
 	}
 	return sched
+}
+
+// SetOnSubApplied must be called before background refreshes start.
+func (s *SubscriptionScheduler) SetOnSubApplied(fn func(*subscription.Subscription)) {
+	s.onSubApplied = fn
 }
 
 // Start launches the background scheduler goroutine.
@@ -334,6 +343,9 @@ func (s *SubscriptionScheduler) UpdateSubscription(sub *subscription.Subscriptio
 
 	if s.onSubUpdated != nil {
 		s.onSubUpdated(sub)
+	}
+	if s.onSubApplied != nil {
+		s.onSubApplied(sub)
 	}
 }
 

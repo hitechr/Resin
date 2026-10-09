@@ -610,6 +610,8 @@ func TestScheduler_StaleSuccessDoesNotOverrideNewerSuccess(t *testing.T) {
 		return newBody, nil // newer attempt succeeds first
 	}
 	sched := newTestScheduler(subMgr, pool, fetcher)
+	var applied atomic.Int32
+	sched.SetOnSubApplied(func(*subscription.Subscription) { applied.Add(1) })
 
 	done1 := make(chan struct{})
 	go func() {
@@ -634,6 +636,9 @@ func TestScheduler_StaleSuccessDoesNotOverrideNewerSuccess(t *testing.T) {
 	}
 	if sub.GetLastError() != "" {
 		t.Fatalf("expected empty last error, got %q", sub.GetLastError())
+	}
+	if applied.Load() != 1 {
+		t.Fatalf("stale success must not notify apply: %d", applied.Load())
 	}
 
 	// Newer success should win; stale old success must be ignored.
@@ -1055,6 +1060,7 @@ func TestScheduler_OnSubUpdated_Called(t *testing.T) {
 	body := makeSubscriptionJSON(`{"type":"shadowsocks","tag":"n","server":"1.1.1.1","server_port":443}`)
 
 	var callCount atomic.Int32
+	var appliedCount atomic.Int32
 	sched := NewSubscriptionScheduler(SchedulerConfig{
 		SubManager: subMgr,
 		Pool:       pool,
@@ -1062,9 +1068,15 @@ func TestScheduler_OnSubUpdated_Called(t *testing.T) {
 		OnSubUpdated: func(s *subscription.Subscription) {
 			callCount.Add(1)
 		},
+		OnSubApplied: func(s *subscription.Subscription) {
+			appliedCount.Add(1)
+		},
 	})
 
 	sched.UpdateSubscription(sub)
+	if appliedCount.Load() != 1 {
+		t.Fatalf("expected successful apply notification, got %d", appliedCount.Load())
+	}
 	if callCount.Load() != 1 {
 		t.Fatalf("expected onSubUpdated to be called once, got %d", callCount.Load())
 	}
@@ -1074,6 +1086,9 @@ func TestScheduler_OnSubUpdated_Called(t *testing.T) {
 	sched.UpdateSubscription(sub)
 	if callCount.Load() != 2 {
 		t.Fatalf("expected onSubUpdated to be called on failure too, got %d", callCount.Load())
+	}
+	if appliedCount.Load() != 1 {
+		t.Fatalf("failure should not notify apply: %d", appliedCount.Load())
 	}
 }
 

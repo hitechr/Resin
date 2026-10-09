@@ -103,6 +103,73 @@ func TestServiceConcurrencyAndCancellation(t *testing.T) {
 	}
 }
 
+func TestServiceCancelOneWaiterKeepsSharedLookup(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	s := NewService(lookupFunc(func(ctx context.Context, ip string) (Result, error) {
+		calls.Add(1)
+		close(started)
+		select {
+		case <-release:
+			return Result{IP: ip}, nil
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		}
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() { _, err := s.Check(ctx, "8.8.8.8"); first <- err }()
+	<-started
+	second := make(chan error, 1)
+	go func() { _, err := s.Check(context.Background(), "8.8.8.8"); second <- err }()
+	// Ensure the second caller is registered before canceling the first.
+	for {
+		s.flightsMu.Lock()
+		joined := s.flights["8.8.8.8"].waiters == 2
+		s.flightsMu.Unlock()
+		if joined {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-first; err != ErrProviderUnavailable {
+		t.Fatalf("first canceled waiter: %v", err)
+	}
+	close(release)
+	if err := <-second; err != nil {
+		t.Fatalf("unrelated waiter: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("provider requests: %d", calls.Load())
+	}
+}
+
+func TestServiceCancelLastWaiterStopsProvider(t *testing.T) {
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	s := NewService(lookupFunc(func(ctx context.Context, ip string) (Result, error) {
+		close(started)
+		<-ctx.Done()
+		close(stopped)
+		return Result{}, ctx.Err()
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() { _, err := s.Check(ctx, "8.8.8.8"); finished <- err }()
+	<-started
+	cancel()
+	if err := <-finished; err != ErrProviderUnavailable {
+		t.Fatalf("canceled waiter: %v", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("provider request was not canceled")
+	}
+}
+
 func TestServiceCoalescesSameIP(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32

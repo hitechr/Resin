@@ -42,8 +42,9 @@ type GlobalNodePool struct {
 	onSubNodeChanged func(subID string, hash node.Hash, added bool)
 
 	// Health callbacks (optional).
-	onNodeDynamicChanged func(hash node.Hash)                // fired on circuit/failure/egress changes
-	onNodeLatencyChanged func(hash node.Hash, domain string) // fired on latency upserts and evictions
+	onNodeDynamicChanged  func(hash node.Hash)                // fired on circuit/failure/egress changes
+	onNodeEgressIPChanged func(hash node.Hash, ip netip.Addr) // fired only when a successful sample changes IP
+	onNodeLatencyChanged  func(hash node.Hash, domain string) // fired on latency upserts and evictions
 
 	// Health config
 	maxLatencyTableEntries int
@@ -60,6 +61,7 @@ type PoolConfig struct {
 	OnNodeRemoved          func(hash node.Hash, entry *node.NodeEntry)
 	OnSubNodeChanged       func(subID string, hash node.Hash, added bool)
 	OnNodeDynamicChanged   func(hash node.Hash)
+	OnNodeEgressIPChanged  func(hash node.Hash, ip netip.Addr)
 	OnNodeLatencyChanged   func(hash node.Hash, domain string)
 	MaxLatencyTableEntries int
 	MaxConsecutiveFailures func() int
@@ -89,6 +91,7 @@ func NewGlobalNodePool(cfg PoolConfig) *GlobalNodePool {
 		onNodeRemoved:          cfg.OnNodeRemoved,
 		onSubNodeChanged:       cfg.OnSubNodeChanged,
 		onNodeDynamicChanged:   cfg.OnNodeDynamicChanged,
+		onNodeEgressIPChanged:  cfg.OnNodeEgressIPChanged,
 		onNodeLatencyChanged:   cfg.OnNodeLatencyChanged,
 		maxLatencyTableEntries: cfg.MaxLatencyTableEntries,
 		maxConsecutiveFailures: maxConsecutiveFailuresFn,
@@ -505,6 +508,11 @@ func (p *GlobalNodePool) SetOnNodeRemoved(fn func(hash node.Hash, entry *node.No
 	p.onNodeRemoved = fn
 }
 
+// SetOnNodeEgressIPChanged must be called before background probes start.
+func (p *GlobalNodePool) SetOnNodeEgressIPChanged(fn func(node.Hash, netip.Addr)) {
+	p.onNodeEgressIPChanged = fn
+}
+
 // NotifyNodeDirty triggers platform re-evaluation for a single node.
 // Used by OutboundManager after outbound creation to update routable views.
 func (p *GlobalNodePool) NotifyNodeDirty(hash node.Hash) {
@@ -685,6 +693,9 @@ func (p *GlobalNodePool) UpdateNodeEgressIP(hash node.Hash, ip *netip.Addr, loc 
 	}
 	if p.onNodeDynamicChanged != nil {
 		p.onNodeDynamicChanged(hash)
+	}
+	if ipChanged && p.onNodeEgressIPChanged != nil {
+		p.onNodeEgressIPChanged(hash, *ip)
 	}
 }
 

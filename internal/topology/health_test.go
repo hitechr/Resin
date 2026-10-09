@@ -393,6 +393,30 @@ func TestRecordLatency_AttemptOnly_UpdatesAttemptTimestamps(t *testing.T) {
 
 // --- UpdateNodeEgressIP tests ---
 
+func TestUpdateNodeEgressIP_QualityNotificationOnlyOnChangedIP(t *testing.T) {
+	var changed []netip.Addr
+	pool := NewGlobalNodePool(PoolConfig{
+		SubLookup:              NewSubscriptionManager().Lookup,
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		OnNodeEgressIPChanged:  func(_ node.Hash, ip netip.Addr) { changed = append(changed, ip) },
+	})
+	raw := []byte(`{"type":"ss","n":"quality-egress"}`)
+	h := node.HashFromRawOptions(raw)
+	pool.AddNodeFromSub(h, raw, "s1")
+	pool.UpdateNodeEgressIP(h, nil, nil)
+	first := netip.MustParseAddr("8.8.8.8")
+	pool.UpdateNodeEgressIP(h, &first, nil)
+	pool.UpdateNodeEgressIP(h, &first, nil)
+	region := "us"
+	pool.UpdateNodeEgressIP(h, nil, &region)
+	second := netip.MustParseAddr("1.1.1.1")
+	pool.UpdateNodeEgressIP(h, &second, nil)
+	if len(changed) != 2 || changed[0] != first || changed[1] != second {
+		t.Fatalf("IP changes: %v", changed)
+	}
+}
+
 func TestUpdateNodeEgressIP_Change(t *testing.T) {
 	var dynamicCount atomic.Int32
 	pool := NewGlobalNodePool(PoolConfig{

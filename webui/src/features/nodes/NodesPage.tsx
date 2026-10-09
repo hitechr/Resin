@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
-import { AlertTriangle, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
+import { AlertTriangle, Eraser, RefreshCw, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
@@ -19,11 +19,13 @@ import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
 import { getEnvConfig } from "../systemConfig/api";
+import { NodeIPBatchStatus } from "./NodeIPBatchStatus";
+import { NodeIPGroupDialog } from "./NodeIPGroupDialog";
 import { NodeIPQualityPanel } from "./NodeIPQualityPanel";
-import { getNode, listNodes, probeEgress, probeLatency } from "./api";
-import type { NodeSummary } from "./types";
+import { checkNodeIPQuality, getNode, listNodeIPGroups, probeEgress, probeLatency } from "./api";
+import type { NodeIPGroup, NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
-import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
+import type { NodeIPGroupSortBy, NodeListFilters, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
 type NodeDisplayStatus = "healthy" | "circuit_open" | "pending_test" | "error" | "disabled";
@@ -269,10 +271,12 @@ export function NodesPage() {
   const [activeFilters, setActiveFilters] = useState<NodeListFilters>(() =>
     draftToActiveFilters(draftFromQuery(location.search))
   );
-  const [sortBy, setSortBy] = useState<NodeSortBy>("tag");
-  const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
+  const [sortBy, setSortBy] = useState<NodeIPGroupSortBy>("risk");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(200);
+  const [selectedGroupKey, setSelectedGroupKey] = useState("");
+  const [groupDetailPage, setGroupDetailPage] = useState(0);
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingEgressHashes, setPendingEgressHashes] = useState<Set<string>>(() => new Set());
@@ -311,10 +315,10 @@ export function NodesPage() {
   });
   const subscriptions = subscriptionsQuery.data ?? [];
 
-  const nodesQuery = useQuery({
-    queryKey: ["nodes", activeFilters, sortBy, sortOrder, page, pageSize],
+  const groupsQuery = useQuery({
+    queryKey: ["node-ip-groups", activeFilters, sortBy, sortOrder, page, pageSize],
     queryFn: () =>
-      listNodes({
+      listNodeIPGroups({
         ...activeFilters,
         sort_by: sortBy,
         sort_order: sortOrder,
@@ -325,31 +329,18 @@ export function NodesPage() {
     placeholderData: (prev) => prev,
   });
 
-  const nodesPage = nodesQuery.data ?? {
-    items: [],
-    total: 0,
-    limit: pageSize,
-    offset: page * pageSize,
-    unique_egress_ips: 0,
-    unique_healthy_egress_ips: 0,
+  const groupsPage = groupsQuery.data ?? {
+    items: [], total: 0, public_ip_count: 0, pending_quality_count: 0,
+    queue_pending: 0, background_deferred: 0,
+    limit: pageSize, offset: page * pageSize,
   };
-  const nodes = nodesPage.items;
-
-  const totalPages = Math.max(1, Math.ceil(nodesPage.total / pageSize));
-
-  const selectedNode = useMemo(() => {
-    if (!selectedNodeHash) {
-      return null;
-    }
-    return nodes.find((item) => item.node_hash === selectedNodeHash) ?? null;
-  }, [nodes, selectedNodeHash]);
-
-  const selectedHash = selectedNode?.node_hash || "";
+  const groups = groupsPage.items;
+  const totalPages = Math.max(1, Math.ceil(groupsPage.total / pageSize));
+  const selectedHash = selectedNodeHash;
 
   const ipQualityConfigQuery = useQuery({
     queryKey: ["system", "config", "env"],
     queryFn: getEnvConfig,
-    enabled: drawerOpen,
     staleTime: Infinity,
   });
 
@@ -360,7 +351,7 @@ export function NodesPage() {
     refetchInterval: 30_000,
   });
 
-  const detailNode = nodeDetailQuery.data ?? selectedNode;
+  const detailNode = nodeDetailQuery.data;
   const drawerVisible = drawerOpen && Boolean(detailNode);
 
   useEffect(() => {
@@ -379,13 +370,19 @@ export function NodesPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [drawerVisible]);
 
+  const openGroup = (key: string) => {
+    setGroupDetailPage(0);
+    setSelectedGroupKey(key);
+  };
+
   const openDrawer = (hash: string) => {
     setSelectedNodeHash(hash);
     setDrawerOpen(true);
   };
 
   const refreshNodes = async () => {
-    await queryClient.invalidateQueries({ queryKey: ["nodes"] });
+    await queryClient.invalidateQueries({ queryKey: ["node-ip-groups"] });
+    await queryClient.invalidateQueries({ queryKey: ["node-ip-group"] });
     if (selectedHash) {
       await queryClient.invalidateQueries({ queryKey: ["node", selectedHash] });
     }
@@ -420,6 +417,15 @@ export function NodesPage() {
       await refreshNodes();
       showToast("error", formatApiErrorMessage(error, t));
     },
+  });
+
+  const checkIPQualityMutation = useMutation({
+    mutationFn: (hash: string) => checkNodeIPQuality(hash),
+    onSuccess: async (_result, hash) => {
+      await refreshNodes();
+      await queryClient.invalidateQueries({ queryKey: ["node-ip-quality", hash] });
+    },
+    onError: (error) => showToast("error", formatApiErrorMessage(error, t)),
   });
 
   const markProbePending = (hash: string, action: ProbeAction): boolean => {
@@ -498,6 +504,8 @@ export function NodesPage() {
     setDraftFilters((prev) => {
       const next = { ...prev, [key]: value };
       setActiveFilters(draftToActiveFilters(next));
+      setSelectedGroupKey("");
+      setGroupDetailPage(0);
       setSelectedNodeHash("");
       setDrawerOpen(false);
       setPage(0);
@@ -508,17 +516,19 @@ export function NodesPage() {
   const resetFilters = () => {
     setDraftFilters(defaultFilterDraft);
     setActiveFilters(draftToActiveFilters(defaultFilterDraft));
+    setSelectedGroupKey("");
+    setGroupDetailPage(0);
     setSelectedNodeHash("");
     setDrawerOpen(false);
     setPage(0);
   };
 
-  const changeSort = (target: NodeSortBy) => {
+  const changeSort = (target: NodeIPGroupSortBy) => {
     if (sortBy === target) {
       setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     } else {
       setSortBy(target);
-      setSortOrder("asc");
+      setSortOrder(target === "risk" ? "desc" : "asc");
     }
     setPage(0);
   };
@@ -528,144 +538,39 @@ export function NodesPage() {
     setPage(0);
   };
 
-  const col = createColumnHelper<NodeSummary>();
+  const col = createColumnHelper<NodeIPGroup>();
 
-  const nodeColumns = [
-    col.accessor((row) => firstTag(row), {
-      id: "tag",
-      header: () => (
-        <button type="button" className="table-sort-btn" onClick={() => changeSort("tag")}>
-          {t("节点名")}
-          <span>{sortIndicator(sortBy === "tag", sortOrder)}</span>
-        </button>
-      ),
-      cell: (info) => (
-        <div className="nodes-tag-cell">
-          <span title={info.getValue() as string}>{info.getValue() as string}</span>
-        </div>
-      ),
+  const groupColumns = [
+    col.accessor("ip", {
+      header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("ip")}>{t("出口 IP")} <span>{sortIndicator(sortBy === "ip", sortOrder)}</span></button>,
+      cell: (info) => <button type="button" className="ip-group-address-btn" onClick={(event) => { event.stopPropagation(); openGroup(info.row.original.key); }}>{info.getValue() || t("未解析出口 IP")}</button>,
     }),
-    col.accessor("region", {
-      header: () => (
-        <button type="button" className="table-sort-btn" onClick={() => changeSort("region")}>
-          {t("区域")}
-          <span>{sortIndicator(sortBy === "region", sortOrder)}</span>
-        </button>
-      ),
+    col.accessor("matched_node_count", {
+      header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("matched_nodes")}>{t("匹配节点数")} <span>{sortIndicator(sortBy === "matched_nodes", sortOrder)}</span></button>,
+    }),
+    col.accessor("risk", {
+      header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("risk")}>{t("账户风险（越高风险越大）")} <span>{sortIndicator(sortBy === "risk", sortOrder)}</span></button>,
+      cell: (info) => info.getValue() ?? t("未知"),
+    }),
+    col.accessor("score", {
+      header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("score")}>{t("信誉分（越高越好）")} <span>{sortIndicator(sortBy === "score", sortOrder)}</span></button>,
+      cell: (info) => info.getValue() ?? t("未知"),
+    }),
+    col.accessor("residential", {
+      header: t("住宅网络"),
+      cell: (info) => info.getValue() == null ? t("未知") : info.getValue() ? t("是") : t("否"),
+    }),
+    col.accessor("asn", {
+      header: "ASN",
+      cell: (info) => <span className="ip-group-asn" title={info.getValue()}>{info.getValue() || t("未知")}</span>,
+    }),
+    col.accessor("state", {
+      header: t("数据状态"),
       cell: (info) => {
-        const val = regionToFlag(info.getValue());
-        return (
-          <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
-            {val}
-          </div>
-        );
-      },
-    }),
-    col.accessor("egress_ip", {
-      header: t("出口 IP"),
-      cell: (info) => {
-        const val = info.getValue() || "-";
-        return (
-          <div style={{ maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={val}>
-            {val}
-          </div>
-        );
-      },
-    }),
-    col.display({
-      id: "reference_latency_ms",
-      header: t("参考延迟"),
-      cell: (info) => {
-        const node = info.row.original;
-        const latencyMs = displayableReferenceLatencyMs(node);
-        if (latencyMs === null) {
-          return "-";
-        }
-        return (
-          <span style={{ color: referenceLatencyColor(latencyMs), fontWeight: 600 }}>
-            {formatLatency(latencyMs)}
-          </span>
-        );
-      },
-    }),
-    col.accessor("last_latency_probe_attempt", {
-      header: t("上次探测"),
-      cell: (info) => formatRelativeTime(info.getValue()),
-    }),
-    col.accessor("failure_count", {
-      header: () => (
-        <button type="button" className="table-sort-btn" onClick={() => changeSort("failure_count")}>
-          {t("连续失败")}
-          <span>{sortIndicator(sortBy === "failure_count", sortOrder)}</span>
-        </button>
-      ),
-      cell: (info) => {
-        const node = info.row.original;
-        return !node.has_outbound ? "-" : node.failure_count;
-      },
-    }),
-    col.display({
-      id: "status",
-      header: t("状态"),
-      cell: (info) => {
-        const node = info.row.original;
-        const status = getNodeDisplayStatus(node);
-        if (status === "disabled") return <Badge variant="neutral">{t("禁用")}</Badge>;
-        if (status === "error") return <Badge variant="danger">{t("错误")}</Badge>;
-        if (status === "pending_test") return <Badge variant="muted">{t("待测")}</Badge>;
-        if (status === "circuit_open") return <Badge variant="warning">{t("熔断")}</Badge>;
-        return <Badge variant="success">{t("健康")}</Badge>;
-      },
-    }),
-    col.accessor("created_at", {
-      header: () => (
-        <button type="button" className="table-sort-btn" onClick={() => changeSort("created_at")}>
-          {t("创建时间")}
-          <span>{sortIndicator(sortBy === "created_at", sortOrder)}</span>
-        </button>
-      ),
-      cell: (info) => {
-        const val = formatDateTime(info.getValue());
-        if (val === "-") return val;
-        const parts = val.split(" ");
-        if (parts.length >= 2) {
-          return (
-            <div className="logs-cell-stack">
-              <span>{parts[0]}</span>
-              <small>{parts.slice(1).join(" ")}</small>
-            </div>
-          );
-        }
-        return val;
-      },
-    }),
-    col.display({
-      id: "actions",
-      header: t("操作"),
-      cell: (info) => {
-        const node = info.row.original;
-        return (
-          <div className="subscriptions-row-actions" onClick={(event) => event.stopPropagation()}>
-            <Button
-              size="sm"
-              variant="ghost"
-              title={t("触发出口探测")}
-              onClick={() => void runProbeEgress(node.node_hash)}
-              disabled={isProbePending(node.node_hash, "egress")}
-            >
-              <Globe size={14} />
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              title={t("触发延迟探测")}
-              onClick={() => void runProbeLatency(node.node_hash)}
-              disabled={isProbePending(node.node_hash, "latency")}
-            >
-              <Zap size={14} />
-            </Button>
-          </div>
-        );
+        const state = info.getValue();
+        if (state === "fresh") return <Badge variant="success">{t("新鲜")}</Badge>;
+        if (state === "stale") return <Badge variant="warning">{t("已过期")}</Badge>;
+        return <Badge variant="muted">{t("未知")}</Badge>;
       },
     }),
   ];
@@ -675,7 +580,6 @@ export function NodesPage() {
       <header className="module-header">
         <div>
           <h2>{t("节点池")}</h2>
-          <p className="module-description">{t("快速定位异常节点并进行探测处理。")}</p>
         </div>
       </header>
 
@@ -684,8 +588,9 @@ export function NodesPage() {
       <Card className="filter-card platform-list-card platform-directory-card">
         <div className="list-card-header">
           <div>
-            <h3>{t("节点列表")}</h3>
-            <p>{t("共 {{total}} 个节点，{{healthy}} 个健康 IP", { total: nodesPage.total, healthy: nodesPage.unique_healthy_egress_ips })}</p>
+            <h3>{t("IP 列表")}</h3>
+            <p>{t("共 {{total}} 个 IP 分组，{{public}} 个公网 IP", { total: groupsPage.total, public: groupsPage.public_ip_count })}</p>
+            {groupsPage.background_deferred > 0 ? <p className="ip-batch-error">{t("后台检查未排队 {{count}} 次", { count: groupsPage.background_deferred })}</p> : null}
           </div>
 
           <div
@@ -798,9 +703,10 @@ export function NodesPage() {
               </Select>
             </div>
 
-            <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.125rem", marginLeft: "auto" }}>
-              <Button size="sm" variant="secondary" onClick={refreshNodes} disabled={nodesQuery.isFetching} style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
-                <RefreshCw size={16} className={nodesQuery.isFetching ? "spin" : undefined} />
+            <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.125rem", marginLeft: "auto", alignItems: "center", flexWrap: "wrap" }}>
+              <NodeIPBatchStatus filters={activeFilters} enabled={Boolean(ipQualityConfigQuery.data?.ip_quality_enabled) && !groupsQuery.isPlaceholderData && !groupsQuery.isLoading} estimated={groupsPage.pending_quality_count} />
+              <Button size="sm" variant="secondary" onClick={refreshNodes} disabled={groupsQuery.isFetching} style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                <RefreshCw size={16} className={groupsQuery.isFetching ? "spin" : undefined} />
                 {t("刷新")}
               </Button>
               <Button size="sm" variant="secondary" onClick={resetFilters} style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
@@ -813,41 +719,65 @@ export function NodesPage() {
       </Card>
 
       <Card className="nodes-table-card platform-cards-container subscriptions-table-card">
-        {nodesQuery.isLoading ? <p className="muted">{t("正在加载节点数据...")}</p> : null}
+        {groupsQuery.isLoading ? <p className="muted">{t("正在加载节点数据...")}</p> : null}
 
-        {nodesQuery.isError ? (
+        {groupsQuery.isError ? (
           <div className="callout callout-error">
             <AlertTriangle size={14} />
-            <span>{formatApiErrorMessage(nodesQuery.error, t)}</span>
+            <span>{formatApiErrorMessage(groupsQuery.error, t)}</span>
           </div>
         ) : null}
 
-        {!nodesQuery.isLoading && !nodes.length ? (
+        {!groupsQuery.isLoading && !groups.length ? (
           <div className="empty-box">
             <Sparkles size={16} />
             <p>{t("没有匹配的节点")}</p>
           </div>
         ) : null}
 
-        {nodes.length ? (
+        {groups.length ? (
           <DataTable
-            data={nodes}
-            columns={nodeColumns}
-            onRowClick={(node) => openDrawer(node.node_hash)}
-            getRowId={(node) => node.node_hash}
+            data={groups}
+            columns={groupColumns}
+            onRowClick={(group) => openGroup(group.key)}
+            getRowId={(group) => group.key}
           />
         ) : null}
 
         <OffsetPagination
           page={page}
           totalPages={totalPages}
-          totalItems={nodesPage.total}
+          totalItems={groupsPage.total}
           pageSize={pageSize}
           pageSizeOptions={PAGE_SIZE_OPTIONS}
           onPageChange={setPage}
           onPageSizeChange={changePageSize}
         />
       </Card>
+
+      {selectedGroupKey && !drawerOpen ? (
+        <NodeIPGroupDialog
+          groupKey={selectedGroupKey}
+          filters={activeFilters}
+          qualityEnabled={Boolean(ipQualityConfigQuery.data?.ip_quality_enabled)}
+          page={groupDetailPage}
+          onPageChange={setGroupDetailPage}
+          onClose={() => setSelectedGroupKey("")}
+          onNode={openDrawer}
+          onEgress={(hash) => void runProbeEgress(hash)}
+          onLatency={(hash) => void runProbeLatency(hash)}
+          onCheckQuality={(hash) => checkIPQualityMutation.mutate(hash)}
+        />
+      ) : null}
+
+      {drawerOpen && !drawerVisible ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("节点详情")} onClick={() => setDrawerOpen(false)}>
+          <Card className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="drawer-header"><h3>{t("节点详情")}</h3><Button variant="ghost" size="sm" aria-label={t("关闭详情面板")} onClick={() => setDrawerOpen(false)}><X size={16} /></Button></div>
+            {nodeDetailQuery.isError ? <div className="callout callout-error">{formatApiErrorMessage(nodeDetailQuery.error, t)}</div> : <p className="muted">{t("加载中...")}</p>}
+          </Card>
+        </div>
+      ) : null}
 
       {drawerVisible && detailNode ? (
         <div

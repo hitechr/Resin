@@ -47,6 +47,7 @@ type systemEnvConfigResponse struct {
 	MetricLatencyBinWidthMS                         int             `json:"metric_latency_bin_width_ms"`
 	MetricLatencyBinOverflowMS                      int             `json:"metric_latency_bin_overflow_ms"`
 	IPQualityEnabled                                bool            `json:"ip_quality_enabled"`
+	IPQualityAutoEnabled                            bool            `json:"ip_quality_auto_enabled"`
 	AdminTokenSet                                   bool            `json:"admin_token_set"`
 	ProxyTokenSet                                   bool            `json:"proxy_token_set"`
 	AdminTokenWeak                                  bool            `json:"admin_token_weak"`
@@ -147,6 +148,7 @@ func systemEnvConfigSnapshot(envCfg *config.EnvConfig) *systemEnvConfigResponse 
 		MetricLatencyBinWidthMS:                         envCfg.MetricLatencyBinWidthMS,
 		MetricLatencyBinOverflowMS:                      envCfg.MetricLatencyBinOverflowMS,
 		IPQualityEnabled:                                envCfg.IPQualityEnabled,
+		IPQualityAutoEnabled:                            envCfg.IPQualityAutoEnabled,
 		AdminTokenSet:                                   adminTokenSet,
 		ProxyTokenSet:                                   proxyTokenSet,
 		AdminTokenWeak:                                  adminTokenSet && config.IsWeakToken(envCfg.AdminToken),

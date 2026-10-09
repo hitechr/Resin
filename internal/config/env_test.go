@@ -59,6 +59,34 @@ func TestLoadEnvConfig_IPQualityOptIn(t *testing.T) {
 	}
 }
 
+func TestLoadEnvConfig_IPQualityAutoRequiresBaseAndAdmin(t *testing.T) {
+	setEnvs(t, requiredEnvs())
+	t.Setenv("RESIN_IP_QUALITY_ENABLED", "false")
+	t.Setenv("RESIN_IP_QUALITY_AUTO_ENABLED", "false")
+	cfg, err := LoadEnvConfig()
+	if err != nil || cfg.IPQualityAutoEnabled {
+		t.Fatalf("automatic checks must default off: cfg=%+v err=%v", cfg, err)
+	}
+	t.Setenv("RESIN_IP_QUALITY_AUTO_ENABLED", "true")
+	if _, err := LoadEnvConfig(); err == nil || !strings.Contains(err.Error(), "RESIN_IP_QUALITY_AUTO_ENABLED requires RESIN_IP_QUALITY_ENABLED") {
+		t.Fatalf("auto without base: %v", err)
+	}
+	t.Setenv("RESIN_IP_QUALITY_ENABLED", "true")
+	t.Setenv("RESIN_ADMIN_TOKEN", " ")
+	if _, err := LoadEnvConfig(); err == nil || !strings.Contains(err.Error(), "RESIN_IP_QUALITY_AUTO_ENABLED requires a nonempty RESIN_ADMIN_TOKEN") {
+		t.Fatalf("auto without admin: %v", err)
+	}
+	t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
+	cfg, err = LoadEnvConfig()
+	if err != nil || !cfg.IPQualityAutoEnabled {
+		t.Fatalf("automatic checks enabled: cfg=%+v err=%v", cfg, err)
+	}
+	t.Setenv("RESIN_IP_QUALITY_AUTO_ENABLED", "invalid")
+	if _, err := LoadEnvConfig(); err == nil || !strings.Contains(err.Error(), "RESIN_IP_QUALITY_AUTO_ENABLED: invalid boolean") {
+		t.Fatalf("invalid automatic flag: %v", err)
+	}
+}
+
 func TestLoadEnvConfig_Defaults(t *testing.T) {
 	setEnvs(t, requiredEnvs())
 

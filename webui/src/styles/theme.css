@@ -3745,3 +3745,95 @@ a {
     transform: translateY(-20px) scale(0.92);
   }
 }
+
+.ip-group-address-btn,
+.ip-group-node-link {
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.ip-group-address-btn:hover,
+.ip-group-node-link:hover {
+  text-decoration: underline;
+}
+
+.ip-group-address,
+.ip-group-asn {
+  overflow-wrap: anywhere;
+}
+
+.ip-group-dialog {
+  width: min(960px, 100%);
+  max-height: min(90vh, 900px);
+}
+
+.ip-group-quality {
+  margin: 16px 0;
+  padding: 12px 0;
+  border-block: 1px solid var(--border);
+}
+
+.ip-group-metrics,
+.ip-group-evidence {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 12px;
+}
+
+.ip-group-evidence {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.ip-group-metrics > div,
+.ip-group-evidence > div {
+  min-width: 0;
+}
+
+.ip-group-metrics span,
+.ip-group-evidence span {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ip-group-metrics strong,
+.ip-group-evidence strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ip-group-nodes-heading,
+.ip-batch-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ip-group-nodes-heading {
+  justify-content: space-between;
+  margin: 12px 0 6px;
+}
+
+.ip-batch-progress,
+.ip-batch-error {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ip-batch-error {
+  color: var(--danger);
+}
+
+.ip-group-node-table {
+  min-width: 600px;
+}

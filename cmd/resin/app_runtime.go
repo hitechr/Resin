@@ -42,6 +42,8 @@ type resinApp struct {
 	requestlogSvc   *requestlog.Service
 	endpointManager *endpointRuntimeManager
 	transportPool   *proxy.OutboundTransportPool
+	ipCoordinator   *ipquality.Coordinator
+	ipQualityAuto   *ipQualityAutoRuntime
 }
 
 func run() error {
@@ -331,6 +333,9 @@ func (a *resinApp) initObservability() error {
 }
 
 func (a *resinApp) startBackgroundServices() {
+	if a.ipQualityAuto != nil {
+		a.ipQualityAuto.Start()
+	}
 	// --- Step 8 Batch 1: CacheFlushWorker + GeoIP + MetricsManager ---
 	a.flushWorker.Start()
 	log.Println("Cache flush worker started")
@@ -474,6 +479,17 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 	}
 	a.endpointManager = endpointManager
 
+	if cpService.IPQuality != nil {
+		a.ipCoordinator = ipquality.NewCoordinator(cpService.IPQuality, func(ip string) bool {
+			return allowedIP(cpService, ip)
+		})
+		cpService.IPCoordinator = a.ipCoordinator
+		if a.envCfg.IPQualityAutoEnabled {
+			a.ipQualityAuto = newIPQualityAutoRuntime(cpService, a.ipCoordinator)
+			a.topoRuntime.scheduler.SetOnSubApplied(a.ipQualityAuto.OnSubApplied)
+			a.topoRuntime.pool.SetOnNodeEgressIPChanged(a.ipQualityAuto.OnNodeEgressIPChanged)
+		}
+	}
 	return nil
 }
 
@@ -575,6 +591,13 @@ func (a *resinApp) shutdown(ctx context.Context) {
 
 	a.topoRuntime.probeMgr.Stop()
 	log.Println("Probe manager stopped")
+
+	if a.ipQualityAuto != nil {
+		a.ipQualityAuto.Stop()
+	}
+	if a.ipCoordinator != nil {
+		a.ipCoordinator.Stop()
+	}
 
 	a.geoSvc.Stop()
 	log.Println("GeoIP service stopped")

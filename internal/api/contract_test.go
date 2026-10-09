@@ -1160,6 +1160,9 @@ func TestAPIContract_SystemEnvConfigSnapshot(t *testing.T) {
 	if body["ip_quality_enabled"] != false {
 		t.Fatalf("ip_quality_enabled: got %v, want false", body["ip_quality_enabled"])
 	}
+	if body["ip_quality_auto_enabled"] != false {
+		t.Fatalf("ip_quality_auto_enabled: got %v, want false", body["ip_quality_auto_enabled"])
+	}
 	if _, ok := body["ip_quality_endpoint"]; ok {
 		t.Fatalf("provider endpoint should not be exposed: body=%s", rec.Body.String())
 	}

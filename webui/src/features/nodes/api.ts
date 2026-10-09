@@ -4,6 +4,11 @@ import type {
   LatencyProbeResult,
   NodeListQuery,
   NodeIPQuality,
+  NodeIPGroupPage,
+  NodeIPGroupDetail,
+  NodeIPBatchJob,
+  NodeListFilters,
+  IPGroupListQuery,
   NodeSummary,
   PageResponse,
 } from "./types";
@@ -50,47 +55,68 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
   return normalized;
 }
 
-export async function listNodes(filters: NodeListQuery): Promise<PageResponse<NodeSummary>> {
-  const query = new URLSearchParams({
-    limit: String(filters.limit ?? 50),
-    offset: String(filters.offset ?? 0),
-    sort_by: filters.sort_by || "tag",
-    sort_order: filters.sort_order || "asc",
-  });
-
+function nodeFiltersQuery(filters: NodeListFilters): URLSearchParams {
+  const query = new URLSearchParams();
   const appendIfNotEmpty = (key: string, value?: string) => {
-    if (!value) {
-      return;
+    if (value?.trim()) {
+      query.set(key, value.trim());
     }
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return;
-    }
-    query.set(key, trimmed);
   };
-
   appendIfNotEmpty("platform_id", filters.platform_id);
   appendIfNotEmpty("subscription_id", filters.subscription_id);
   appendIfNotEmpty("tag_keyword", filters.tag_keyword);
   appendIfNotEmpty("region", filters.region?.toLowerCase());
   appendIfNotEmpty("egress_ip", filters.egress_ip);
   appendIfNotEmpty("probed_since", filters.probed_since);
+  if (filters.circuit_open !== undefined) query.set("circuit_open", String(filters.circuit_open));
+  if (filters.has_outbound !== undefined) query.set("has_outbound", String(filters.has_outbound));
+  if (filters.enabled !== undefined) query.set("enabled", String(filters.enabled));
+  return query;
+}
 
-  if (filters.circuit_open !== undefined) {
-    query.set("circuit_open", String(filters.circuit_open));
-  }
-  if (filters.has_outbound !== undefined) {
-    query.set("has_outbound", String(filters.has_outbound));
-  }
-  if (filters.enabled !== undefined) {
-    query.set("enabled", String(filters.enabled));
-  }
+export async function listNodes(filters: NodeListQuery): Promise<PageResponse<NodeSummary>> {
+  const query = nodeFiltersQuery(filters);
+  query.set("limit", String(filters.limit ?? 50));
+  query.set("offset", String(filters.offset ?? 0));
+  query.set("sort_by", filters.sort_by || "tag");
+  query.set("sort_order", filters.sort_order || "asc");
 
   const data = await apiRequest<PageResponse<ApiNodeSummary>>(`${basePath}?${query.toString()}`);
   return {
     ...data,
     items: data.items.map(normalizeNode),
   };
+}
+
+export async function listNodeIPGroups(filters: IPGroupListQuery): Promise<NodeIPGroupPage> {
+  const query = nodeFiltersQuery(filters);
+  query.set("sort_by", filters.sort_by ?? "risk");
+  query.set("sort_order", filters.sort_order ?? "desc");
+  query.set("limit", String(filters.limit ?? 50));
+  query.set("offset", String(filters.offset ?? 0));
+  return apiRequest<NodeIPGroupPage>(`/api/v1/node-ip-groups?${query.toString()}`);
+}
+
+export async function getNodeIPGroup(key: string, filters: NodeListFilters, limit: number, offset: number): Promise<NodeIPGroupDetail> {
+  const query = nodeFiltersQuery(filters);
+  query.set("limit", String(limit));
+  query.set("offset", String(offset));
+  const data = await apiRequest<Omit<NodeIPGroupDetail, "nodes"> & { nodes: ApiNodeSummary[] }>(
+    `/api/v1/node-ip-groups/${encodeURIComponent(key)}?${query.toString()}`
+  );
+  return { ...data, nodes: data.nodes.map(normalizeNode) };
+}
+
+export async function startNodeIPBatch(filters: NodeListFilters): Promise<NodeIPBatchJob> {
+  return apiRequest<NodeIPBatchJob>(`/api/v1/node-ip-batches?${nodeFiltersQuery(filters).toString()}`, { method: "POST" });
+}
+
+export async function getNodeIPBatch(id: string): Promise<NodeIPBatchJob> {
+  return apiRequest<NodeIPBatchJob>(`/api/v1/node-ip-batches/${encodeURIComponent(id)}`);
+}
+
+export async function cancelNodeIPBatch(id: string): Promise<NodeIPBatchJob> {
+  return apiRequest<NodeIPBatchJob>(`/api/v1/node-ip-batches/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 }
 
 export async function getNode(hash: string): Promise<NodeSummary> {

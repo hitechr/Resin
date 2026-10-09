@@ -16,6 +16,62 @@ export type NodeIPQuality = {
   quality?: IPQualityResult;
 };
 
+export type NodeIPGroup = {
+  key: string;
+  ip: string;
+  matched_node_count: number;
+  score: number | null;
+  risk: number | null;
+  risk_version: string;
+  residential: boolean | null;
+  asn: string;
+  state: "fresh" | "stale" | "unknown" | "unresolved";
+  observed_at: string | null;
+};
+
+export type NodeIPGroupPage = {
+  items: NodeIPGroup[];
+  total: number;
+  public_ip_count: number;
+  pending_quality_count: number;
+  queue_pending: number;
+  background_deferred: number;
+  limit: number;
+  offset: number;
+};
+
+export type NodeIPGroupDetail = {
+  group: NodeIPGroup;
+  quality: IPQualityResult | null;
+  nodes: NodeSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type NodeIPBatchJob = {
+  id: string;
+  source: "manual" | "automatic";
+  total: number;
+  fresh_skipped: number;
+  completed: number;
+  failed: number;
+  deferred: number;
+  canceled: boolean;
+  started_at: string;
+  ended_at?: string;
+  error_summary?: string;
+};
+
+export type NodeIPGroupSortBy = "ip" | "risk" | "score" | "matched_nodes";
+
+export type IPGroupListQuery = NodeListFilters & {
+  sort_by?: NodeIPGroupSortBy;
+  sort_order?: SortOrder;
+  limit?: number;
+  offset?: number;
+};
+
 export type NodeTag = {
   subscription_id: string;
   subscription_name: string;

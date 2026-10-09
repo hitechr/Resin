@@ -47,9 +47,10 @@ type EnvConfig struct {
 	ProxyTransportIdleConnTimeout                   time.Duration
 	ProxyBypassRules                                []string
 
-	// Optional read-only third-party IP reputation
-	IPQualityEnabled  bool
-	IPQualityEndpoint string
+	// Optional third-party IP reputation (automatic inventory checks require separate opt-in).
+	IPQualityEnabled     bool
+	IPQualityAutoEnabled bool
+	IPQualityEndpoint    string
 
 	// Request log
 	RequestLogQueueSize           int
@@ -142,6 +143,15 @@ func LoadEnvConfig() (*EnvConfig, error) {
 		}
 	}
 
+	if raw := os.Getenv("RESIN_IP_QUALITY_AUTO_ENABLED"); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			errs = append(errs, "RESIN_IP_QUALITY_AUTO_ENABLED: invalid boolean")
+		} else {
+			cfg.IPQualityAutoEnabled = enabled
+		}
+	}
+
 	// --- Request log ---
 	cfg.RequestLogQueueSize = envInt("RESIN_REQUEST_LOG_QUEUE_SIZE", 8192, &errs)
 	cfg.RequestLogQueueFlushBatchSize = envInt("RESIN_REQUEST_LOG_QUEUE_FLUSH_BATCH_SIZE", 4096, &errs)
@@ -193,6 +203,14 @@ func LoadEnvConfig() (*EnvConfig, error) {
 		endpoint, err := url.Parse(cfg.IPQualityEndpoint)
 		if err != nil || endpoint == nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" || endpoint.RawQuery != "" || endpoint.ForceQuery || strings.Contains(cfg.IPQualityEndpoint, "#") || endpoint.Opaque != "" {
 			errs = append(errs, "RESIN_IP_QUALITY_ENDPOINT must be an HTTPS URL without credentials, query or fragment")
+		}
+	}
+	if cfg.IPQualityAutoEnabled {
+		if !cfg.IPQualityEnabled {
+			errs = append(errs, "RESIN_IP_QUALITY_AUTO_ENABLED requires RESIN_IP_QUALITY_ENABLED")
+		}
+		if strings.TrimSpace(cfg.AdminToken) == "" {
+			errs = append(errs, "RESIN_IP_QUALITY_AUTO_ENABLED requires a nonempty RESIN_ADMIN_TOKEN")
 		}
 	}
 	if !hasProxyToken {

@@ -19,6 +19,7 @@ var (
 	ErrInvalidResponse     = errors.New("invalid provider response")
 	ErrProviderUnavailable = errors.New("provider unavailable")
 	ErrRateLimited         = errors.New("IP quality rate or concurrency limit")
+	ErrNoLongerEligible    = errors.New("IP no longer eligible for background lookup")
 )
 
 const Source = "One IP / Net.Coffee"

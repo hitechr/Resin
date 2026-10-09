@@ -117,6 +117,12 @@ func NewServerWithAddress(
 
 		// Nodes.
 		authed.Handle("GET /api/v1/nodes", HandleListNodes(cp))
+		authed.Handle("GET /api/v1/node-ip-groups", HandleListNodeIPGroups(cp))
+		authed.Handle("GET /api/v1/node-ip-groups/unresolved", HandleGetNodeIPGroup(cp, true))
+		authed.Handle("GET /api/v1/node-ip-groups/{ip}", HandleGetNodeIPGroup(cp, false))
+		authed.Handle("POST /api/v1/node-ip-batches", HandleStartNodeIPBatch(cp))
+		authed.Handle("GET /api/v1/node-ip-batches/{id}", HandleGetNodeIPBatch(cp))
+		authed.Handle("POST /api/v1/node-ip-batches/{id}/cancel", HandleCancelNodeIPBatch(cp))
 		authed.Handle("GET /api/v1/nodes/stats/regions", HandleNodeRegionStats(cp))
 		authed.Handle("GET /api/v1/nodes/{hash}", HandleGetNode(cp))
 		authed.Handle("GET /api/v1/nodes/{hash}/ip-quality", HandleGetNodeIPQuality(cp))

@@ -58,6 +58,7 @@ type ControlPlaneService struct {
 	Router          *routing.Router
 	GeoIP           *geoip.Service
 	IPQuality       *ipquality.Service
+	IPCoordinator   *ipquality.Coordinator
 	ProbeMgr        *probe.ProbeManager
 	MatcherRuntime  *proxy.AccountMatcherRuntime
 	RuntimeCfg      *atomic.Pointer[config.RuntimeConfig]
