@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -45,6 +46,10 @@ type EnvConfig struct {
 	ProxyTransportMaxIdleConnsPerHost               int
 	ProxyTransportIdleConnTimeout                   time.Duration
 	ProxyBypassRules                                []string
+
+	// Optional read-only third-party IP reputation
+	IPQualityEnabled  bool
+	IPQualityEndpoint string
 
 	// Request log
 	RequestLogQueueSize           int
@@ -127,6 +132,16 @@ func LoadEnvConfig() (*EnvConfig, error) {
 	cfg.ProxyTransportIdleConnTimeout = envDuration("RESIN_PROXY_TRANSPORT_IDLE_CONN_TIMEOUT", 90*time.Second, &errs)
 	cfg.ProxyBypassRules = envDelimitedStringSlice("RESIN_PROXY_BYPASS", []string{})
 
+	cfg.IPQualityEndpoint = strings.TrimSpace(envStr("RESIN_IP_QUALITY_ENDPOINT", "https://ip.huzhihui.com/api/ip/health"))
+	if raw := os.Getenv("RESIN_IP_QUALITY_ENABLED"); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			errs = append(errs, "RESIN_IP_QUALITY_ENABLED: invalid boolean")
+		} else {
+			cfg.IPQualityEnabled = enabled
+		}
+	}
+
 	// --- Request log ---
 	cfg.RequestLogQueueSize = envInt("RESIN_REQUEST_LOG_QUEUE_SIZE", 8192, &errs)
 	cfg.RequestLogQueueFlushBatchSize = envInt("RESIN_REQUEST_LOG_QUEUE_FLUSH_BATCH_SIZE", 4096, &errs)
@@ -170,6 +185,15 @@ func LoadEnvConfig() (*EnvConfig, error) {
 
 	if !hasAdminToken {
 		errs = append(errs, "RESIN_ADMIN_TOKEN must be defined. If you intend to use an empty token, please set it explicitly (e.g., RESIN_ADMIN_TOKEN=).")
+	}
+	if cfg.IPQualityEnabled {
+		if strings.TrimSpace(cfg.AdminToken) == "" {
+			errs = append(errs, "RESIN_IP_QUALITY_ENABLED requires a nonempty RESIN_ADMIN_TOKEN")
+		}
+		endpoint, err := url.Parse(cfg.IPQualityEndpoint)
+		if err != nil || endpoint == nil || endpoint.Scheme != "https" || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" || endpoint.RawQuery != "" || endpoint.ForceQuery || strings.Contains(cfg.IPQualityEndpoint, "#") || endpoint.Opaque != "" {
+			errs = append(errs, "RESIN_IP_QUALITY_ENDPOINT must be an HTTPS URL without credentials, query or fragment")
+		}
 	}
 	if !hasProxyToken {
 		errs = append(errs, "RESIN_PROXY_TOKEN must be defined. If you intend to use an empty token, please set it explicitly (e.g., RESIN_PROXY_TOKEN=).")

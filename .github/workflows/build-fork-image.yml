@@ -51,7 +51,7 @@ jobs:
           go-version: '1.25.x'
       - name: Test API
         if: matrix.goarch == 'amd64'
-        run: go test ./internal/api
+        run: go test ./internal/api ./internal/ipquality ./internal/config ./cmd/resin
       - name: Build Resin
         env:
           GOOS: linux

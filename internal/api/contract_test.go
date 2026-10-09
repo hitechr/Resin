@@ -1157,6 +1157,12 @@ func TestAPIContract_SystemEnvConfigSnapshot(t *testing.T) {
 			body["default_platform_allocation_policy"],
 		)
 	}
+	if body["ip_quality_enabled"] != false {
+		t.Fatalf("ip_quality_enabled: got %v, want false", body["ip_quality_enabled"])
+	}
+	if _, ok := body["ip_quality_endpoint"]; ok {
+		t.Fatalf("provider endpoint should not be exposed: body=%s", rec.Body.String())
+	}
 	if body["admin_token_set"] != false {
 		t.Fatalf("admin_token_set: got %v, want false", body["admin_token_set"])
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/Resinat/Resin/internal/buildinfo"
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/ipquality"
 	"github.com/Resinat/Resin/internal/metrics"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
@@ -383,6 +384,10 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		ProbeMgr:       a.topoRuntime.probeMgr,
 		GeoIP:          a.geoSvc,
 		MatcherRuntime: a.accountMatcher,
+	}
+
+	if a.envCfg.IPQualityEnabled {
+		cpService.IPQuality = ipquality.NewService(ipquality.NewClient(a.envCfg.IPQualityEndpoint, nil))
 	}
 
 	apiSrv := api.NewServerWithAddress(

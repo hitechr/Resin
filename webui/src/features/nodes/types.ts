@@ -1,3 +1,21 @@
+export type IPQualityResult = {
+  ip: string;
+  score: number | null;
+  status: "good" | "moderate" | "poor" | "unknown";
+  isp: string;
+  asn: string;
+  flags: Record<"residential" | "datacenter" | "vpn" | "proxy" | "tor" | "abuser", boolean | null>;
+  source: string;
+  observed_at: string;
+  expires_at: string;
+};
+
+export type NodeIPQuality = {
+  state: "disabled" | "no_egress_ip" | "not_checked" | "fresh" | "stale";
+  egress_ip?: string;
+  quality?: IPQualityResult;
+};
+
 export type NodeTag = {
   subscription_id: string;
   subscription_name: string;

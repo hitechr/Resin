@@ -3,6 +3,7 @@ import type {
   EgressProbeResult,
   LatencyProbeResult,
   NodeListQuery,
+  NodeIPQuality,
   NodeSummary,
   PageResponse,
 } from "./types";
@@ -95,6 +96,14 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
 export async function getNode(hash: string): Promise<NodeSummary> {
   const data = await apiRequest<ApiNodeSummary>(`${basePath}/${hash}`);
   return normalizeNode(data);
+}
+
+export async function getNodeIPQuality(hash: string): Promise<NodeIPQuality> {
+  return apiRequest<NodeIPQuality>(`${basePath}/${hash}/ip-quality`);
+}
+
+export async function checkNodeIPQuality(hash: string): Promise<NodeIPQuality> {
+  return apiRequest<NodeIPQuality>(`${basePath}/${hash}/actions/check-ip-quality`, { method: "POST" });
 }
 
 export async function probeEgress(hash: string): Promise<EgressProbeResult> {

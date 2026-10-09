@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/ccojocar/zxcvbn-go v1.0.4
+	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
@@ -14,6 +15,8 @@ require (
 	github.com/sagernet/sing-box v1.12.21
 	github.com/zeebo/xxh3 v1.0.2
 	golang.org/x/net v0.50.0
+	golang.org/x/sync v0.19.0
+	golang.org/x/time v0.12.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.45.0
 )
@@ -47,7 +50,6 @@ require (
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/godbus/dbus/v5 v5.1.1-0.20230522191255-76236955d466 // indirect
 	github.com/gofrs/uuid/v5 v5.3.2 // indirect
-	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/nftables v0.2.1-0.20240414091927-5e242ec57806 // indirect
@@ -119,11 +121,9 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/mod v0.32.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
-	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect

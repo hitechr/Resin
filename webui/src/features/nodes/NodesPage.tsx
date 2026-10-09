@@ -18,6 +18,8 @@ import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
+import { getEnvConfig } from "../systemConfig/api";
+import { NodeIPQualityPanel } from "./NodeIPQualityPanel";
 import { getNode, listNodes, probeEgress, probeLatency } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
@@ -343,6 +345,13 @@ export function NodesPage() {
   }, [nodes, selectedNodeHash]);
 
   const selectedHash = selectedNode?.node_hash || "";
+
+  const ipQualityConfigQuery = useQuery({
+    queryKey: ["system", "config", "env"],
+    queryFn: getEnvConfig,
+    enabled: drawerOpen,
+    staleTime: Infinity,
+  });
 
   const nodeDetailQuery = useQuery({
     queryKey: ["node", selectedHash],
@@ -942,6 +951,8 @@ export function NodesPage() {
                   <div className="callout callout-error">{t("最近错误：{{message}}", { message: detailNode.last_error })}</div>
                 ) : null}
               </section>
+
+              {ipQualityConfigQuery.data?.ip_quality_enabled ? <NodeIPQualityPanel key={`${detailNode.node_hash}:${detailNode.egress_ip}`} node={detailNode} /> : null}
 
               <section className="platform-drawer-section">
                 <div className="platform-drawer-section-head">

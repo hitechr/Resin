@@ -11,6 +11,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/geoip"
+	"github.com/Resinat/Resin/internal/ipquality"
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/probe"
 	"github.com/Resinat/Resin/internal/proxy"
@@ -56,6 +57,7 @@ type ControlPlaneService struct {
 	Scheduler       *topology.SubscriptionScheduler
 	Router          *routing.Router
 	GeoIP           *geoip.Service
+	IPQuality       *ipquality.Service
 	ProbeMgr        *probe.ProbeManager
 	MatcherRuntime  *proxy.AccountMatcherRuntime
 	RuntimeCfg      *atomic.Pointer[config.RuntimeConfig]

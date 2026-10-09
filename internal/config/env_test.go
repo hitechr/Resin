@@ -25,6 +25,40 @@ func requiredEnvs() map[string]string {
 	}
 }
 
+func TestLoadEnvConfig_IPQualityOptIn(t *testing.T) {
+	setEnvs(t, requiredEnvs())
+	t.Setenv("RESIN_IP_QUALITY_ENABLED", "false")
+	cfg, err := LoadEnvConfig()
+	if err != nil || cfg.IPQualityEnabled {
+		t.Fatalf("default disabled: cfg=%+v err=%v", cfg, err)
+	}
+	if cfg.IPQualityEndpoint != "https://ip.huzhihui.com/api/ip/health" {
+		t.Fatalf("unexpected default endpoint: %q", cfg.IPQualityEndpoint)
+	}
+	t.Setenv("RESIN_IP_QUALITY_ENABLED", "true")
+	t.Setenv("RESIN_ADMIN_TOKEN", "")
+	if _, err := LoadEnvConfig(); err == nil || !strings.Contains(err.Error(), "RESIN_IP_QUALITY_ENABLED") {
+		t.Fatalf("empty admin token must reject enablement: %v", err)
+	}
+	t.Setenv("RESIN_ADMIN_TOKEN", "admin-secret")
+	for _, endpoint := range []string{"http://example.com/check", "https://user:pass@example.com/check", "https://example.com/check#fragment", "https://example.com/check#", "https://example.com/check?ip=1.1.1.1"} {
+		t.Setenv("RESIN_IP_QUALITY_ENDPOINT", endpoint)
+		if _, err := LoadEnvConfig(); err == nil || !strings.Contains(err.Error(), "RESIN_IP_QUALITY_ENDPOINT") {
+			t.Errorf("endpoint %q must fail: %v", endpoint, err)
+		}
+	}
+	t.Setenv("RESIN_IP_QUALITY_ENDPOINT", "https://127.0.0.1/check")
+	cfg, err = LoadEnvConfig()
+	if err != nil || cfg.IPQualityEndpoint != "https://127.0.0.1/check" {
+		t.Fatalf("self-hosted endpoint: cfg=%+v err=%v", cfg, err)
+	}
+	t.Setenv("RESIN_IP_QUALITY_ENDPOINT", "https://example.com/check")
+	cfg, err = LoadEnvConfig()
+	if err != nil || !cfg.IPQualityEnabled || cfg.IPQualityEndpoint != "https://example.com/check" {
+		t.Fatalf("enabled config: cfg=%+v err=%v", cfg, err)
+	}
+}
+
 func TestLoadEnvConfig_Defaults(t *testing.T) {
 	setEnvs(t, requiredEnvs())
 

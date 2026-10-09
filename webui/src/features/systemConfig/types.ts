@@ -55,6 +55,7 @@ export type EnvConfig = {
   metric_leases_retention_seconds: number;
   metric_latency_bin_width_ms: number;
   metric_latency_bin_overflow_ms: number;
+  ip_quality_enabled: boolean;
   admin_token_set: boolean;
   proxy_token_set: boolean;
   admin_token_weak: boolean;
