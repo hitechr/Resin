@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"regexp"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Resinat/Resin/internal/node"
 )
@@ -40,10 +41,15 @@ type Platform struct {
 	ReverseProxyFixedAccountHeaders  []string
 	AllocationPolicy                 AllocationPolicy
 	PassiveCircuitBreakerDisabled    bool
+	// MaxReferenceLatencyMs excludes nodes whose displayed reference latency
+	// (authority-domain EWMA average) exceeds the value; 0 disables the cap.
+	MaxReferenceLatencyMs int
 
 	// Routable view & its lock.
-	// viewMu serializes both FullRebuild and NotifyDirty.
-	view   *RoutableView
+	// viewMu serializes FullRebuild and NotifyDirty. Readers load the view
+	// pointer atomically: FullRebuild builds a new view offline and swaps it
+	// in, so a reader never observes an empty or partially rebuilt set.
+	view   atomic.Pointer[RoutableView]
 	viewMu sync.Mutex
 }
 
@@ -55,38 +61,43 @@ func NewPlatform(id, name string, regexFilters []*regexp.Regexp, regionFilters [
 
 // NewPlatformWithTagFilter creates a Platform with compiled line-oriented tag rules.
 func NewPlatformWithTagFilter(id, name string, regexFilters node.TagFilter, regionFilters []string) *Platform {
-	return &Platform{
+	plat := &Platform{
 		ID:            id,
 		Name:          name,
 		RegexFilters:  regexFilters,
 		RegionFilters: regionFilters,
-		view:          NewRoutableView(),
 	}
+	plat.view.Store(NewRoutableView())
+	return plat
 }
 
 // View returns the platform's routable view as a read-only interface.
-// External callers cannot Add/Remove/Clear — only FullRebuild and NotifyDirty can mutate.
+// External callers cannot Add/Remove — only FullRebuild and NotifyDirty can mutate.
 func (p *Platform) View() ReadOnlyView {
-	return p.view
+	return p.view.Load()
 }
 
-// FullRebuild clears the routable view and re-evaluates all nodes from the pool.
-// Acquires viewMu — any concurrent NotifyDirty calls block until rebuild completes.
+// FullRebuild re-evaluates all nodes from the pool into a fresh view and
+// atomically swaps it in, so readers never observe a partially rebuilt set.
+// Acquires viewMu — any concurrent NotifyDirty calls block until the swap
+// completes and then apply to the new view.
 func (p *Platform) FullRebuild(
 	poolRange PoolRangeFunc,
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
+	latencyAuthorities []string,
 ) {
 	p.viewMu.Lock()
 	defer p.viewMu.Unlock()
 
-	p.view.Clear()
+	next := NewRoutableView()
 	poolRange(func(h node.Hash, entry *node.NodeEntry) bool {
-		if p.evaluateNode(entry, subLookup, geoLookup) {
-			p.view.Add(h)
+		if p.evaluateNode(entry, subLookup, geoLookup, latencyAuthorities) {
+			next.Add(h)
 		}
 		return true
 	})
+	p.view.Store(next)
 }
 
 // NotifyDirty re-evaluates a single node and adds/removes it from the view.
@@ -96,21 +107,23 @@ func (p *Platform) NotifyDirty(
 	getEntry GetEntryFunc,
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
+	latencyAuthorities []string,
 ) {
 	p.viewMu.Lock()
 	defer p.viewMu.Unlock()
 
+	view := p.view.Load()
 	entry, ok := getEntry(h)
 	if !ok {
 		// Node was deleted from pool.
-		p.view.Remove(h)
+		view.Remove(h)
 		return
 	}
 
-	if p.evaluateNode(entry, subLookup, geoLookup) {
-		p.view.Add(h)
+	if p.evaluateNode(entry, subLookup, geoLookup, latencyAuthorities) {
+		view.Add(h)
 	} else {
-		p.view.Remove(h)
+		view.Remove(h)
 	}
 }
 
@@ -119,6 +132,7 @@ func (p *Platform) evaluateNode(
 	entry *node.NodeEntry,
 	subLookup node.SubLookupFunc,
 	geoLookup GeoLookupFunc,
+	latencyAuthorities []string,
 ) bool {
 	// 0. Disabled nodes are never routable.
 	if entry.IsDisabledBySubscriptions(subLookup) {
@@ -152,6 +166,16 @@ func (p *Platform) evaluateNode(
 	// 5. Has at least one latency record.
 	if !entry.HasLatency() {
 		return false
+	}
+
+	// 6. Reference-latency cap (when configured): compare the same
+	// authority-domain average the node list displays; nodes without any
+	// authority sample are excluded while the cap is active.
+	if p.MaxReferenceLatencyMs > 0 {
+		avgMs, ok := node.AverageEWMAForDomainsMs(entry, latencyAuthorities)
+		if !ok || avgMs > float64(p.MaxReferenceLatencyMs) {
+			return false
+		}
 	}
 
 	return true

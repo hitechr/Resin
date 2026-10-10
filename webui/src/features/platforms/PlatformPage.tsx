@@ -371,6 +371,22 @@ export function PlatformPage() {
                 </p>
               </div>
 
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-max-reference-latency">
+                  {t("最大参考延迟 (ms)")}
+                </label>
+                <Input
+                  id="create-max-reference-latency"
+                  inputMode="numeric"
+                  placeholder={t("例如 400，留空表示不限制")}
+                  invalid={Boolean(createForm.formState.errors.max_reference_latency_ms_text)}
+                  {...createForm.register("max_reference_latency_ms_text")}
+                />
+                {createForm.formState.errors.max_reference_latency_ms_text?.message ? (
+                  <p className="field-error">{t(createForm.formState.errors.max_reference_latency_ms_text.message)}</p>
+                ) : null}
+              </div>
+
               <div className="detail-actions">
                 <Button type="submit" disabled={createMutation.isPending}>
                   {createMutation.isPending ? t("创建中...") : t("确认创建")}

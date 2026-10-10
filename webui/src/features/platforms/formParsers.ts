@@ -24,3 +24,23 @@ export function parseHeaderLines(input: string | undefined): string[] {
   }
   return headers;
 }
+
+// parseMaxReferenceLatencyMs converts the optional form input to the API
+// value. Empty input means the reference-latency cap is off (0).
+export function parseMaxReferenceLatencyMs(input: string | undefined): number {
+  const trimmed = input?.trim();
+  if (!trimmed) {
+    return 0;
+  }
+  return Number(trimmed);
+}
+
+// isValidMaxReferenceLatencyInput reports whether the raw form input is
+// empty (cap off) or a non-negative safe integer.
+export function isValidMaxReferenceLatencyInput(input: string | undefined): boolean {
+  const trimmed = input?.trim();
+  if (!trimmed) {
+    return true;
+  }
+  return /^\d+$/.test(trimmed) && Number.isSafeInteger(Number(trimmed));
+}

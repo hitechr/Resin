@@ -195,6 +195,16 @@ func (p *GlobalNodePool) RegisterPlatform(plat *platform.Platform) {
 	}
 }
 
+// PublishPlatform registers a new platform with a fully built routable view.
+// The view is built before registration so readers never observe an empty
+// view, then rebuilt once more because node changes during the pre-build are
+// not delivered to an unregistered platform.
+func (p *GlobalNodePool) PublishPlatform(plat *platform.Platform) {
+	p.RebuildPlatform(plat)
+	p.RegisterPlatform(plat)
+	p.RebuildPlatform(plat)
+}
+
 // UnregisterPlatform removes a platform from dirty notifications.
 func (p *GlobalNodePool) UnregisterPlatform(id string) {
 	p.platMu.Lock()
@@ -214,8 +224,9 @@ func (p *GlobalNodePool) UnregisterPlatform(id string) {
 
 // ReplacePlatform atomically replaces an existing platform object by ID.
 // It follows a copy-on-write update path: the caller builds a new Platform
-// instance, this method rebuilds its routable view, then swaps map pointers
-// under platMu in one critical section.
+// instance, this method rebuilds its routable view, swaps map pointers under
+// platMu in one critical section, then rebuilds once more so node changes
+// that raced the pre-build are reflected in the published view.
 func (p *GlobalNodePool) ReplacePlatform(next *platform.Platform) error {
 	if next == nil || next.ID == "" {
 		return ErrPlatformNotRegistered
@@ -225,6 +236,20 @@ func (p *GlobalNodePool) ReplacePlatform(next *platform.Platform) error {
 	// an empty, not-yet-built view due only to replacement.
 	p.RebuildPlatform(next)
 
+	if err := p.swapPlatform(next); err != nil {
+		return err
+	}
+
+	// Node changes that landed during the pre-build were delivered only to
+	// the previous platform object; rebuild once more now that next receives
+	// notifications, so the published view matches current node state.
+	p.RebuildPlatform(next)
+	return nil
+}
+
+// swapPlatform publishes next under platMu, replacing the registered platform
+// with the same ID and moving the name mapping to next.
+func (p *GlobalNodePool) swapPlatform(next *platform.Platform) error {
 	p.platMu.Lock()
 	defer p.platMu.Unlock()
 
@@ -287,6 +312,27 @@ func (p *GlobalNodePool) platformSnapshot() []*platform.Platform {
 		platforms = append(platforms, plat)
 	}
 	return platforms
+}
+
+// latencyLimitedPlatformSnapshot returns registered platforms whose routable
+// view depends on authority-domain latency.
+func (p *GlobalNodePool) latencyLimitedPlatformSnapshot() []*platform.Platform {
+	var limited []*platform.Platform
+	for _, plat := range p.platformSnapshot() {
+		if plat.MaxReferenceLatencyMs > 0 {
+			limited = append(limited, plat)
+		}
+	}
+	return limited
+}
+
+// currentLatencyAuthorities returns the configured authority domains, or nil
+// when no source is wired.
+func (p *GlobalNodePool) currentLatencyAuthorities() []string {
+	if p.latencyAuthorities == nil {
+		return nil
+	}
+	return p.latencyAuthorities()
 }
 
 // MakeSubLookup builds the SubLookupFunc closure for MatchRegexs / tag resolution.
@@ -419,7 +465,17 @@ func (p *GlobalNodePool) MakeHealthyAndEnabledEvaluator() func(entry *node.NodeE
 
 // notifyAllPlatformsDirty tells every registered platform to re-evaluate a node.
 func (p *GlobalNodePool) notifyAllPlatformsDirty(hash node.Hash) {
-	platforms := p.platformSnapshot()
+	p.notifyPlatformsDirty(hash, p.platformSnapshot())
+}
+
+// notifyLatencyLimitedPlatformsDirty re-evaluates a node only on platforms
+// whose routable view depends on authority-domain latency.
+func (p *GlobalNodePool) notifyLatencyLimitedPlatformsDirty(hash node.Hash) {
+	p.notifyPlatformsDirty(hash, p.latencyLimitedPlatformSnapshot())
+}
+
+// notifyPlatformsDirty tells the given platforms to re-evaluate a node.
+func (p *GlobalNodePool) notifyPlatformsDirty(hash node.Hash, platforms []*platform.Platform) {
 	if len(platforms) == 0 {
 		return
 	}
@@ -428,6 +484,7 @@ func (p *GlobalNodePool) notifyAllPlatformsDirty(hash node.Hash) {
 	getEntry := func(h node.Hash) (*node.NodeEntry, bool) {
 		return p.nodes.Load(h)
 	}
+	latencyAuthorities := p.currentLatencyAuthorities()
 
 	workers := runtime.GOMAXPROCS(0)
 	if workers < 1 {
@@ -445,7 +502,7 @@ func (p *GlobalNodePool) notifyAllPlatformsDirty(hash node.Hash) {
 		go func(plat *platform.Platform) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			plat.NotifyDirty(hash, getEntry, subLookup, p.geoLookup)
+			plat.NotifyDirty(hash, getEntry, subLookup, p.geoLookup, latencyAuthorities)
 		}(plat)
 	}
 	wg.Wait()
@@ -453,7 +510,16 @@ func (p *GlobalNodePool) notifyAllPlatformsDirty(hash node.Hash) {
 
 // RebuildAllPlatforms triggers a full rebuild on all registered platforms.
 func (p *GlobalNodePool) RebuildAllPlatforms() {
-	platforms := p.platformSnapshot()
+	p.rebuildPlatforms(p.platformSnapshot())
+}
+
+// RebuildLatencyLimitedPlatforms triggers a full rebuild on platforms whose
+// routable view depends on the authority-domain list.
+func (p *GlobalNodePool) RebuildLatencyLimitedPlatforms() {
+	p.rebuildPlatforms(p.latencyLimitedPlatformSnapshot())
+}
+
+func (p *GlobalNodePool) rebuildPlatforms(platforms []*platform.Platform) {
 	if len(platforms) == 0 {
 		return
 	}
@@ -462,6 +528,7 @@ func (p *GlobalNodePool) RebuildAllPlatforms() {
 	poolRange := func(fn func(node.Hash, *node.NodeEntry) bool) {
 		p.nodes.Range(fn)
 	}
+	latencyAuthorities := p.currentLatencyAuthorities()
 
 	workers := runtime.GOMAXPROCS(0)
 	if workers < 1 {
@@ -479,7 +546,7 @@ func (p *GlobalNodePool) RebuildAllPlatforms() {
 		go func(plat *platform.Platform) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			plat.FullRebuild(poolRange, subLookup, p.geoLookup)
+			plat.FullRebuild(poolRange, subLookup, p.geoLookup, latencyAuthorities)
 		}(plat)
 	}
 	wg.Wait()
@@ -491,7 +558,7 @@ func (p *GlobalNodePool) RebuildPlatform(plat *platform.Platform) {
 	poolRange := func(fn func(node.Hash, *node.NodeEntry) bool) {
 		p.nodes.Range(fn)
 	}
-	plat.FullRebuild(poolRange, subLookup, p.geoLookup)
+	plat.FullRebuild(poolRange, subLookup, p.geoLookup, p.currentLatencyAuthorities())
 }
 
 // --- Health Management ---
@@ -633,6 +700,10 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 	// now satisfy the HasLatency filter — notify platforms.
 	if wasEmpty {
 		p.notifyAllPlatformsDirty(hash)
+	} else if isAuthority {
+		// Authority samples move the reference average, which only affects
+		// platforms with a reference-latency cap.
+		p.notifyLatencyLimitedPlatformsDirty(hash)
 	}
 
 	if p.onNodeLatencyChanged != nil {

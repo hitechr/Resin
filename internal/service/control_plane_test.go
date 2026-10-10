@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"path/filepath"
@@ -890,6 +891,7 @@ func TestDeletePlatform_DoesNotDecodeCorruptPersistedFiltersJSON(t *testing.T) {
 		"",
 		platformRow.AllocationPolicy,
 		true,
+		0,
 	))
 
 	cp := &ControlPlaneService{
@@ -953,6 +955,7 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 		"",
 		defaultRow.AllocationPolicy,
 		true,
+		0,
 	))
 
 	cp := &ControlPlaneService{
@@ -1095,6 +1098,7 @@ func TestResetPlatformToDefault_DoesNotDecodeCorruptPersistedFiltersJSON(t *test
 		"",
 		platformRow.AllocationPolicy,
 		true,
+		0,
 	))
 
 	cp := &ControlPlaneService{
@@ -1253,5 +1257,242 @@ func TestListAccountHeaderRules_FailsFastOnCorruptPersistedHeadersColumn(t *test
 	}
 	if serviceErr.Err == nil || !strings.Contains(serviceErr.Err.Error(), "decode account header rule") {
 		t.Fatalf("unexpected wrapped service error: %v", serviceErr.Err)
+	}
+}
+
+// --- platform max_reference_latency_ms tests ---
+
+func newPlatformLimitTestService(t *testing.T) (*ControlPlaneService, *state.StateEngine) {
+	t.Helper()
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = closer.Close()
+	})
+
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+
+	cp := &ControlPlaneService{
+		Engine: engine,
+		Pool:   pool,
+		SubMgr: subMgr,
+		EnvCfg: &config.EnvConfig{
+			DefaultPlatformStickyTTL:              30 * time.Minute,
+			DefaultPlatformRegexFilters:           []string{},
+			DefaultPlatformRegionFilters:          []string{},
+			DefaultPlatformReverseProxyMissAction: "TREAT_AS_EMPTY",
+			DefaultPlatformAllocationPolicy:       "BALANCED",
+		},
+	}
+	return cp, engine
+}
+
+func TestCreatePlatform_MaxReferenceLatencyPersistence(t *testing.T) {
+	cp, engine := newPlatformLimitTestService(t)
+
+	// Omitted field on create defaults to 0 (filter disabled).
+	nameOff := "latency-off"
+	createdOff, err := cp.CreatePlatform(CreatePlatformRequest{Name: &nameOff})
+	if err != nil {
+		t.Fatalf("CreatePlatform: %v", err)
+	}
+	if createdOff.MaxReferenceLatencyMs != 0 {
+		t.Fatalf("omitted max_reference_latency_ms = %d, want 0", createdOff.MaxReferenceLatencyMs)
+	}
+
+	// Explicit positive limit round-trips through persistence and reads.
+	nameLimited := "latency-limited"
+	limit := 400
+	created, err := cp.CreatePlatform(CreatePlatformRequest{Name: &nameLimited, MaxReferenceLatencyMs: &limit})
+	if err != nil {
+		t.Fatalf("CreatePlatform: %v", err)
+	}
+	if created.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("created max_reference_latency_ms = %d, want 400", created.MaxReferenceLatencyMs)
+	}
+	persisted, err := engine.GetPlatform(created.ID)
+	if err != nil {
+		t.Fatalf("GetPlatform: %v", err)
+	}
+	if persisted.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("persisted max_reference_latency_ms = %d, want 400", persisted.MaxReferenceLatencyMs)
+	}
+	read, err := cp.GetPlatform(created.ID)
+	if err != nil {
+		t.Fatalf("GetPlatform: %v", err)
+	}
+	if read.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("read max_reference_latency_ms = %d, want 400", read.MaxReferenceLatencyMs)
+	}
+
+	// Negative values are rejected without creating the platform.
+	nameInvalid := "latency-invalid"
+	negative := -1
+	_, err = cp.CreatePlatform(CreatePlatformRequest{Name: &nameInvalid, MaxReferenceLatencyMs: &negative})
+	if err == nil {
+		t.Fatal("expected negative max_reference_latency_ms to be rejected")
+	}
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) || svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("expected INVALID_ARGUMENT, got %v", err)
+	}
+	platforms, err := engine.ListPlatforms()
+	if err != nil {
+		t.Fatalf("ListPlatforms: %v", err)
+	}
+	if len(platforms) != 2 {
+		t.Fatalf("rejected create must not persist a platform, got %d platforms", len(platforms))
+	}
+}
+
+func TestUpdatePlatform_MaxReferenceLatencyPatchSemantics(t *testing.T) {
+	cp, engine := newPlatformLimitTestService(t)
+
+	name := "patch-latency"
+	limit := 400
+	created, err := cp.CreatePlatform(CreatePlatformRequest{Name: &name, MaxReferenceLatencyMs: &limit})
+	if err != nil {
+		t.Fatalf("CreatePlatform: %v", err)
+	}
+
+	patch := func(body string) (*PlatformResponse, error) {
+		t.Helper()
+		return cp.UpdatePlatform(created.ID, json.RawMessage(body))
+	}
+
+	// PATCH 0 clears the limit.
+	cleared, err := patch(`{"max_reference_latency_ms": 0}`)
+	if err != nil {
+		t.Fatalf("clear patch: %v", err)
+	}
+	if cleared.MaxReferenceLatencyMs != 0 {
+		t.Fatalf("cleared max_reference_latency_ms = %d, want 0", cleared.MaxReferenceLatencyMs)
+	}
+	persisted, err := engine.GetPlatform(created.ID)
+	if err != nil {
+		t.Fatalf("GetPlatform: %v", err)
+	}
+	if persisted.MaxReferenceLatencyMs != 0 {
+		t.Fatalf("cleared persisted max_reference_latency_ms = %d, want 0", persisted.MaxReferenceLatencyMs)
+	}
+
+	// PATCH sets a positive limit again.
+	updated, err := patch(`{"max_reference_latency_ms": 400}`)
+	if err != nil {
+		t.Fatalf("set patch: %v", err)
+	}
+	if updated.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("updated max_reference_latency_ms = %d, want 400", updated.MaxReferenceLatencyMs)
+	}
+
+	// Omitted field preserves the stored value.
+	omitted, err := patch(`{"sticky_ttl": "1h"}`)
+	if err != nil {
+		t.Fatalf("omitted patch: %v", err)
+	}
+	if omitted.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("omitted patch max_reference_latency_ms = %d, want 400", omitted.MaxReferenceLatencyMs)
+	}
+
+	// Invalid values are rejected and leave stored state unchanged.
+	for _, body := range []string{
+		`{"max_reference_latency_ms": -5}`,
+		`{"max_reference_latency_ms": 1.5}`,
+		`{"max_reference_latency_ms": "x"}`,
+		`{"max_reference_latency_ms": null}`,
+	} {
+		if _, err := patch(body); err == nil {
+			t.Fatalf("expected %s to be rejected", body)
+		} else {
+			var svcErr *ServiceError
+			if !errors.As(err, &svcErr) || svcErr.Code != "INVALID_ARGUMENT" {
+				t.Fatalf("expected INVALID_ARGUMENT for %s, got %v", body, err)
+			}
+		}
+	}
+	persisted, err = engine.GetPlatform(created.ID)
+	if err != nil {
+		t.Fatalf("GetPlatform: %v", err)
+	}
+	if persisted.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("rejected patches must not change stored value, got %d, want 400", persisted.MaxReferenceLatencyMs)
+	}
+}
+
+func TestPatchRuntimeConfig_AuthorityChangeRebuildsLatencyLimitedViews(t *testing.T) {
+	dir := t.TempDir()
+	engine, closer, err := state.PersistenceBootstrap(
+		filepath.Join(dir, "state"),
+		filepath.Join(dir, "cache"),
+	)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = closer.Close()
+	})
+
+	runtimeCfg := &atomic.Pointer[config.RuntimeConfig]{}
+	cfg := config.NewDefaultRuntimeConfig()
+	cfg.LatencyAuthorities = []string{"gstatic.com"}
+	runtimeCfg.Store(cfg)
+
+	subMgr := topology.NewSubscriptionManager()
+	sub := subscription.NewSubscription("sub-1", "sub", "https://example.com/sub", true, false)
+	subMgr.Register(sub)
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+		LatencyAuthorities: func() []string {
+			return runtimeCfg.Load().LatencyAuthorities
+		},
+	})
+
+	raw := []byte(`{"type":"ss","server":"1.1.1.1","port":443}`)
+	hash := node.HashFromRawOptions(raw)
+	sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"seed"}})
+	entry := node.NewNodeEntry(hash, raw, time.Now(), 16)
+	entry.AddSubscriptionID(sub.ID)
+	entry.SetEgressIP(netip.MustParseAddr("1.2.3.4"))
+	entry.LatencyTable.LoadEntryClassified("gstatic.com", node.DomainLatencyStats{
+		Ewma: 300 * time.Millisecond, LastUpdated: time.Now(),
+	}, true)
+	entry.LatencyTable.LoadEntryClassified("alt.example", node.DomainLatencyStats{
+		Ewma: 900 * time.Millisecond, LastUpdated: time.Now(),
+	}, true)
+	ob := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&ob)
+	pool.LoadNodeFromBootstrap(entry)
+
+	plat := platform.NewPlatform("plat-limited", "limited", nil, nil)
+	plat.MaxReferenceLatencyMs = 400
+	pool.RegisterPlatform(plat)
+	pool.RebuildAllPlatforms()
+	if !plat.View().Contains(hash) {
+		t.Fatal("sanity: 300ms under the configured authority should be routable")
+	}
+
+	cp := &ControlPlaneService{Engine: engine, Pool: pool, RuntimeCfg: runtimeCfg}
+	if _, err := cp.PatchRuntimeConfig(json.RawMessage(`{"latency_authorities": ["alt.example"]}`)); err != nil {
+		t.Fatalf("PatchRuntimeConfig: %v", err)
+	}
+	if plat.View().Contains(hash) {
+		t.Fatal("authority change must recompute the latency-limited view against the new snapshot")
 	}
 }

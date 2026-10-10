@@ -32,6 +32,7 @@ type PlatformResponse struct {
 	ReverseProxyFixedAccountHeader   string   `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 string   `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    bool     `json:"passive_circuit_breaker_disabled"`
+	MaxReferenceLatencyMs            int      `json:"max_reference_latency_ms"`
 	UpdatedAt                        string   `json:"updated_at"`
 }
 
@@ -50,6 +51,7 @@ func platformToResponse(p model.Platform) PlatformResponse {
 		ReverseProxyFixedAccountHeader:   fixedHeader,
 		AllocationPolicy:                 p.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    p.PassiveCircuitBreakerDisabled,
+		MaxReferenceLatencyMs:            p.MaxReferenceLatencyMs,
 		UpdatedAt:                        time.Unix(0, p.UpdatedAtNs).UTC().Format(time.RFC3339Nano),
 	}
 }
@@ -76,6 +78,7 @@ type platformConfig struct {
 	ReverseProxyFixedAccountHeader   string
 	AllocationPolicy                 string
 	PassiveCircuitBreakerDisabled    bool
+	MaxReferenceLatencyMs            int
 }
 
 func normalizePlatformMissAction(raw string) string {
@@ -121,6 +124,7 @@ func platformConfigFromModel(mp model.Platform) platformConfig {
 		ReverseProxyFixedAccountHeader:   normalizeHeaderFieldName(mp.ReverseProxyFixedAccountHeader),
 		AllocationPolicy:                 mp.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    mp.PassiveCircuitBreakerDisabled,
+		MaxReferenceLatencyMs:            mp.MaxReferenceLatencyMs,
 	}
 }
 
@@ -136,6 +140,7 @@ func (cfg platformConfig) toModel(id string, updatedAtNs int64) model.Platform {
 		ReverseProxyFixedAccountHeader:   cfg.ReverseProxyFixedAccountHeader,
 		AllocationPolicy:                 cfg.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    cfg.PassiveCircuitBreakerDisabled,
+		MaxReferenceLatencyMs:            cfg.MaxReferenceLatencyMs,
 		UpdatedAtNs:                      updatedAtNs,
 	}
 }
@@ -156,6 +161,7 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 		cfg.ReverseProxyFixedAccountHeader,
 		cfg.AllocationPolicy,
 		cfg.PassiveCircuitBreakerDisabled,
+		cfg.MaxReferenceLatencyMs,
 	), nil
 }
 
@@ -256,6 +262,9 @@ func setPlatformAllocationPolicy(cfg *platformConfig, policy string) *ServiceErr
 }
 
 func validatePlatformConfig(cfg *platformConfig, validateRegionFilters bool) *ServiceError {
+	if cfg.MaxReferenceLatencyMs < 0 {
+		return invalidArg("max_reference_latency_ms: must be non-negative")
+	}
 	if validateRegionFilters {
 		if err := platform.ValidateRegionFilters(cfg.RegionFilters); err != nil {
 			return invalidArg(err.Error())
@@ -334,6 +343,7 @@ type CreatePlatformRequest struct {
 	ReverseProxyFixedAccountHeader   *string  `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 *string  `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    *bool    `json:"passive_circuit_breaker_disabled"`
+	MaxReferenceLatencyMs            *int     `json:"max_reference_latency_ms"`
 }
 
 // CreatePlatform creates a new platform.
@@ -391,6 +401,9 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 	if req.PassiveCircuitBreakerDisabled != nil {
 		cfg.PassiveCircuitBreakerDisabled = *req.PassiveCircuitBreakerDisabled
 	}
+	if req.MaxReferenceLatencyMs != nil {
+		cfg.MaxReferenceLatencyMs = *req.MaxReferenceLatencyMs
+	}
 	if err := validatePlatformConfig(&cfg, true); err != nil {
 		return nil, err
 	}
@@ -401,11 +414,8 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 		return nil, svcErr
 	}
 
-	// Register in topology pool.
-	// Build the routable view before publish so concurrent readers don't observe
-	// a newly created platform with an empty view.
-	s.Pool.RebuildPlatform(plat)
-	s.Pool.RegisterPlatform(plat)
+	// Publish in topology pool with a fully built routable view.
+	s.Pool.PublishPlatform(plat)
 
 	r := s.withRoutableNodeCount(platformToResponse(mp))
 	return &r, nil
@@ -508,6 +518,11 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 	} else if ok {
 		cfg.PassiveCircuitBreakerDisabled = disabled
 	}
+	if maxLatencyMs, ok, err := patch.optionalInt("max_reference_latency_ms"); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.MaxReferenceLatencyMs = maxLatencyMs
+	}
 	if err := validatePlatformConfig(&cfg, regionFiltersPatched); err != nil {
 		return nil, err
 	}
@@ -583,8 +598,9 @@ type PreviewFilterRequest struct {
 }
 
 type PlatformSpecFilter struct {
-	RegexFilters  []string `json:"regex_filters"`
-	RegionFilters []string `json:"region_filters"`
+	RegexFilters          []string `json:"regex_filters"`
+	RegionFilters         []string `json:"region_filters"`
+	MaxReferenceLatencyMs int      `json:"max_reference_latency_ms"`
 }
 
 // NodeSummary is the API response for a node.
@@ -658,12 +674,8 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	if lastAuthority := entry.LastAuthorityLatencyProbeAttempt.Load(); lastAuthority > 0 {
 		ns.LastAuthorityLatencyProbeAttempt = time.Unix(0, lastAuthority).UTC().Format(time.RFC3339Nano)
 	}
-	if s != nil && s.RuntimeCfg != nil {
-		if cfg := s.RuntimeCfg.Load(); cfg != nil {
-			if avgMs, ok := node.AverageEWMAForDomainsMs(entry, cfg.LatencyAuthorities); ok {
-				ns.ReferenceLatencyMs = &avgMs
-			}
-		}
+	if avgMs, ok := s.nodeReferenceLatencyMs(entry); ok {
+		ns.ReferenceLatencyMs = &avgMs
 	}
 	if lastEgressAttempt := entry.LastEgressUpdateAttempt.Load(); lastEgressAttempt > 0 {
 		ns.LastEgressUpdateAttempt = time.Unix(0, lastEgressAttempt).UTC().Format(time.RFC3339Nano)
@@ -696,6 +708,20 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	return ns
 }
 
+// nodeReferenceLatencyMs returns the node's displayed reference latency: the
+// average of its authority-domain EWMA samples. The preview filter compares
+// against the same value the node list shows.
+func (s *ControlPlaneService) nodeReferenceLatencyMs(entry *node.NodeEntry) (float64, bool) {
+	if s == nil || s.RuntimeCfg == nil {
+		return 0, false
+	}
+	cfg := s.RuntimeCfg.Load()
+	if cfg == nil {
+		return 0, false
+	}
+	return node.AverageEWMAForDomainsMs(entry, cfg.LatencyAuthorities)
+}
+
 // PreviewFilter returns nodes matching the given filter spec.
 func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSummary, error) {
 	hasPlatformID := req.PlatformID != nil && *req.PlatformID != ""
@@ -707,6 +733,7 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 
 	var regexFilters node.TagFilter
 	var regionFilters []string
+	maxReferenceLatencyMs := 0
 
 	if hasPlatformID {
 		plat, ok := s.Pool.GetPlatform(*req.PlatformID)
@@ -715,6 +742,7 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 		}
 		regexFilters = plat.RegexFilters
 		regionFilters = plat.RegionFilters
+		maxReferenceLatencyMs = plat.MaxReferenceLatencyMs
 	} else {
 		compiled, err := platform.CompileRegexFilters(req.PlatformSpec.RegexFilters)
 		if err != nil {
@@ -725,6 +753,10 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 		if err := platform.ValidateRegionFilters(regionFilters); err != nil {
 			return nil, invalidArg(err.Error())
 		}
+		if req.PlatformSpec.MaxReferenceLatencyMs < 0 {
+			return nil, invalidArg("max_reference_latency_ms: must be non-negative")
+		}
+		maxReferenceLatencyMs = req.PlatformSpec.MaxReferenceLatencyMs
 	}
 
 	var subLookup node.SubLookupFunc
@@ -742,6 +774,12 @@ func (s *ControlPlaneService) PreviewFilter(req PreviewFilterRequest) ([]NodeSum
 				region = entry.GetRegion(s.GeoIP.Lookup)
 			}
 			if !platform.MatchRegionFilter(region, regionFilters) {
+				return true
+			}
+		}
+		if maxReferenceLatencyMs > 0 {
+			avgMs, ok := s.nodeReferenceLatencyMs(entry)
+			if !ok || avgMs > float64(maxReferenceLatencyMs) {
 				return true
 			}
 		}

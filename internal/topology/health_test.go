@@ -525,3 +525,144 @@ func TestUpdateNodeEgressIP_LocStateMachine(t *testing.T) {
 		t.Fatalf("egress IP should update on ip change: got %v, want %v", got, ip2)
 	}
 }
+
+// --- reference-latency cap tests ---
+
+func TestRecordLatency_AuthoritySampleRefreshesLatencyLimitedPlatforms(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "url", true, false)
+	subMgr.Register(sub)
+
+	// Every platform evaluation resolves the node's subscriptions, so the
+	// lookup count reveals which notifications re-evaluated platforms.
+	var lookupCount atomic.Int32
+	countingLookup := func(subID string) *subscription.Subscription {
+		lookupCount.Add(1)
+		return subMgr.Lookup(subID)
+	}
+
+	pool := NewGlobalNodePool(PoolConfig{
+		SubLookup:              countingLookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyAuthorities:     func() []string { return []string{"gstatic.com"} },
+		// A tiny decay window makes each probe sample replace the EWMA so
+		// limit crossings are deterministic.
+		LatencyDecayWindow: func() time.Duration { return time.Nanosecond },
+	})
+
+	unlimited := platform.NewPlatform("p-unlimited", "Unlimited", nil, nil)
+	limited := platform.NewPlatform("p-limited", "Limited", nil, nil)
+	limited.MaxReferenceLatencyMs = 400
+
+	// Phase 1: only the unlimited platform is registered.
+	pool.RegisterPlatform(unlimited)
+	h := addTestNode(pool, sub, `{"type":"ss","n":"latency-limit"}`)
+	entry, _ := pool.GetEntry(h)
+	ob := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&ob)
+	entry.SetEgressIP(netip.MustParseAddr("9.9.9.9"))
+	pool.RecordResult(h, true)
+
+	latency399 := 399 * time.Millisecond
+	pool.RecordLatency(h, "gstatic.com", &latency399) // first sample: all platforms
+	if !unlimited.View().Contains(h) {
+		t.Fatal("sanity: node should be routable on the unlimited platform")
+	}
+
+	lookupCount.Store(0)
+	latency401 := 401 * time.Millisecond
+	pool.RecordLatency(h, "gstatic.com", &latency401)
+	if lookupCount.Load() != 0 {
+		t.Fatal("authority sample must not re-evaluate platforms without a latency limit")
+	}
+
+	// Phase 2: a latency-limited platform follows later authority samples.
+	pool.RegisterPlatform(limited)
+	pool.RebuildPlatform(limited)
+	if limited.View().Contains(h) {
+		t.Fatal("sanity: 401ms average should be outside a 400ms-limited view")
+	}
+
+	lookupCount.Store(0)
+	pool.RecordLatency(h, "gstatic.com", &latency399)
+	if !limited.View().Contains(h) {
+		t.Fatal("authority sample crossing under the limit should rejoin the view")
+	}
+	if lookupCount.Load() == 0 {
+		t.Fatal("expected latency-limited platform re-evaluation on authority sample")
+	}
+
+	pool.RecordLatency(h, "gstatic.com", &latency401)
+	if limited.View().Contains(h) {
+		t.Fatal("authority sample crossing over the limit should leave the view")
+	}
+
+	// Ordinary-domain samples leave limit-based membership untouched and do
+	// not re-evaluate latency-limited platforms.
+	lookupCount.Store(0)
+	latency999 := 999 * time.Millisecond
+	pool.RecordLatency(h, "unrelated.com", &latency999)
+	if lookupCount.Load() != 0 {
+		t.Fatal("ordinary-domain sample must not re-evaluate latency-limited platforms")
+	}
+	if limited.View().Contains(h) {
+		t.Fatal("ordinary-domain sample must not change limit-based membership")
+	}
+	if !unlimited.View().Contains(h) {
+		t.Fatal("unlimited platform must keep the node regardless of latency")
+	}
+}
+
+func TestRebuildLatencyLimitedPlatforms_AuthorityListChange(t *testing.T) {
+	subMgr := NewSubscriptionManager()
+	sub := subscription.NewSubscription("s1", "TestSub", "url", true, false)
+	subMgr.Register(sub)
+
+	authorities := []string{"gstatic.com"}
+	pool := NewGlobalNodePool(PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyAuthorities:     func() []string { return authorities },
+	})
+
+	limited := platform.NewPlatform("p-limited", "Limited", nil, nil)
+	limited.MaxReferenceLatencyMs = 400
+	pool.RegisterPlatform(limited)
+
+	h := addTestNode(pool, sub, `{"type":"ss","n":"authority-switch"}`)
+	entry, _ := pool.GetEntry(h)
+	ob := testutil.NewNoopOutbound()
+	entry.Outbound.Store(&ob)
+	entry.SetEgressIP(netip.MustParseAddr("9.9.9.9"))
+	pool.RecordResult(h, true)
+
+	// Bootstrap-style latency load followed by the boot rebuild.
+	entry.LatencyTable.LoadEntryClassified("gstatic.com", node.DomainLatencyStats{
+		Ewma: 300 * time.Millisecond, LastUpdated: time.Now(),
+	}, true)
+	entry.LatencyTable.LoadEntryClassified("alt.example", node.DomainLatencyStats{
+		Ewma: 900 * time.Millisecond, LastUpdated: time.Now(),
+	}, true)
+	pool.RebuildAllPlatforms()
+	if !limited.View().Contains(h) {
+		t.Fatal("boot rebuild: 300ms under the configured authority should be routable")
+	}
+
+	// Authority list change: the new authority's 900ms sample now drives the filter.
+	authorities = []string{"alt.example"}
+	pool.RebuildLatencyLimitedPlatforms()
+	if limited.View().Contains(h) {
+		t.Fatal("view must recompute against the new authority list")
+	}
+
+	// Switching back restores membership using the new snapshot.
+	authorities = []string{"gstatic.com"}
+	pool.RebuildLatencyLimitedPlatforms()
+	if !limited.View().Contains(h) {
+		t.Fatal("view must recompute against the restored authority list")
+	}
+}

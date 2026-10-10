@@ -914,3 +914,108 @@ func TestStateRepo_ConcurrentWrites(t *testing.T) {
 func itoa(i int) string {
 	return strconv.Itoa(i)
 }
+
+func TestMigrateStateDB_AddsMaxReferenceLatencyToLegacyPlatforms(t *testing.T) {
+	dir := t.TempDir()
+	db, err := OpenDB(dir + "/state.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Simulate a pre-000010 platforms schema without max_reference_latency_ms.
+	_, err = db.Exec(`
+		CREATE TABLE platforms (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			sticky_ttl_ns INTEGER NOT NULL,
+			regex_filters_json TEXT NOT NULL DEFAULT '[]',
+			region_filters_json TEXT NOT NULL DEFAULT '[]',
+			reverse_proxy_miss_action TEXT NOT NULL DEFAULT 'RANDOM',
+			reverse_proxy_empty_account_behavior TEXT NOT NULL DEFAULT 'RANDOM',
+			reverse_proxy_fixed_account_header TEXT NOT NULL DEFAULT '',
+			allocation_policy TEXT NOT NULL DEFAULT 'BALANCED',
+			updated_at_ns INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create legacy platforms table: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO platforms (id, name, sticky_ttl_ns, updated_at_ns)
+		VALUES ('legacy-plat', 'Legacy', 1000, 1)
+	`); err != nil {
+		t.Fatalf("insert legacy platform row: %v", err)
+	}
+
+	if err := MigrateStateDB(db); err != nil {
+		t.Fatalf("MigrateStateDB: %v", err)
+	}
+
+	if ok, err := hasTableColumn(db, "platforms", "max_reference_latency_ms"); err != nil || !ok {
+		t.Fatalf("expected migrated column max_reference_latency_ms, ok=%v err=%v", ok, err)
+	}
+
+	repo := newStateRepo(db)
+	got, err := repo.GetPlatform("legacy-plat")
+	if err != nil {
+		t.Fatalf("GetPlatform: %v", err)
+	}
+	if got.MaxReferenceLatencyMs != 0 {
+		t.Fatalf("legacy platform max_reference_latency_ms = %d, want 0", got.MaxReferenceLatencyMs)
+	}
+}
+
+func TestStateRepo_Platform_MaxReferenceLatency(t *testing.T) {
+	repo := newTestStateRepo(t)
+	now := time.Now().UnixNano()
+
+	p := model.Platform{
+		ID: "plat-latency", Name: "Latency", StickyTTLNs: 1000,
+		RegexFilters: []string{}, RegionFilters: []string{},
+		ReverseProxyMissAction: "TREAT_AS_EMPTY", AllocationPolicy: "BALANCED",
+		UpdatedAtNs: now,
+	}
+	if err := repo.UpsertPlatform(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetPlatform(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MaxReferenceLatencyMs != 0 {
+		t.Fatalf("omitted max_reference_latency_ms = %d, want 0", got.MaxReferenceLatencyMs)
+	}
+
+	p.MaxReferenceLatencyMs = 400
+	if err := repo.UpsertPlatform(p); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetPlatform(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("max_reference_latency_ms = %d, want 400", got.MaxReferenceLatencyMs)
+	}
+
+	list, err := repo.ListPlatforms()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].MaxReferenceLatencyMs != 400 {
+		t.Fatalf("list max_reference_latency_ms = %+v, want 400", list)
+	}
+
+	p.MaxReferenceLatencyMs = -1
+	if err := repo.UpsertPlatform(p); err == nil {
+		t.Fatal("expected negative max_reference_latency_ms to be rejected")
+	}
+	got, err = repo.GetPlatform(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MaxReferenceLatencyMs != 400 {
+		t.Fatalf("rejected update must preserve stored value, got %d, want 400", got.MaxReferenceLatencyMs)
+	}
+}

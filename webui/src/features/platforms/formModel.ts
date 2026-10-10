@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { allocationPolicies, emptyAccountBehaviors, missActions } from "./constants";
-import { parseHeaderLines, parseLinesToList } from "./formParsers";
+import {
+  isValidMaxReferenceLatencyInput,
+  parseHeaderLines,
+  parseLinesToList,
+  parseMaxReferenceLatencyMs,
+} from "./formParsers";
 import type { Platform, PlatformCreateInput, PlatformUpdateInput } from "./types";
 
 const platformNameForbiddenChars = ".:|/\\@?#%~";
@@ -33,6 +38,9 @@ export const platformFormSchema = z.object({
   sticky_ttl: z.string().optional(),
   regex_filters_text: z.string().optional(),
   region_filters_text: z.string().optional(),
+  max_reference_latency_ms_text: z.string().optional().refine(isValidMaxReferenceLatencyInput, {
+    message: "请输入非负整数（留空表示不限制）",
+  }),
   reverse_proxy_miss_action: z.enum(missActions),
   reverse_proxy_empty_account_behavior: z.enum(emptyAccountBehaviors),
   reverse_proxy_fixed_account_header: z.string().optional(),
@@ -58,6 +66,7 @@ export const defaultPlatformFormValues: PlatformFormValues = {
   sticky_ttl: "",
   regex_filters_text: "",
   region_filters_text: "",
+  max_reference_latency_ms_text: "",
   reverse_proxy_miss_action: "TREAT_AS_EMPTY",
   reverse_proxy_empty_account_behavior: "RANDOM",
   reverse_proxy_fixed_account_header: "Authorization",
@@ -74,6 +83,7 @@ export function platformToFormValues(platform: Platform): PlatformFormValues {
     sticky_ttl: platform.sticky_ttl,
     regex_filters_text: regexFilters.join("\n"),
     region_filters_text: regionFilters.join("\n"),
+    max_reference_latency_ms_text: platform.max_reference_latency_ms > 0 ? String(platform.max_reference_latency_ms) : "",
     reverse_proxy_miss_action: platform.reverse_proxy_miss_action,
     reverse_proxy_empty_account_behavior: platform.reverse_proxy_empty_account_behavior,
     reverse_proxy_fixed_account_header: platform.reverse_proxy_fixed_account_header,
@@ -87,6 +97,7 @@ function toPlatformPayloadBase(values: PlatformFormValues) {
     name: values.name.trim(),
     regex_filters: parseLinesToList(values.regex_filters_text),
     region_filters: parseLinesToList(values.region_filters_text, (value) => value.toLowerCase()),
+    max_reference_latency_ms: parseMaxReferenceLatencyMs(values.max_reference_latency_ms_text),
     reverse_proxy_miss_action: values.reverse_proxy_miss_action,
     reverse_proxy_empty_account_behavior: values.reverse_proxy_empty_account_behavior,
     reverse_proxy_fixed_account_header: parseHeaderLines(values.reverse_proxy_fixed_account_header).join("\n"),

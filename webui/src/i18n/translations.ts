@@ -439,6 +439,9 @@ Note: Once enabled, requests without authentication information are rejected ins
   "每行一条，如 hk / us / !hk": "One per line, e.g. hk / us / !hk",
   "支持反选：以 ! 开头可排除地区（如 !hk）。可与正选混用，最终结果为“先正选再排除”。":
     "Supports exclusion: prefix a region with ! to exclude it, such as !hk. You can mix include and exclude rules; the final result is include first, then exclude.",
+  "最大参考延迟 (ms)": "Max reference latency (ms)",
+  "例如 400，留空表示不限制": "e.g. 400; leave empty for no limit",
+  "请输入非负整数（留空表示不限制）": "Enter a non-negative integer (leave empty for no limit)",
   "每行一个 header，例如 Authorization": "One header per line, e.g. Authorization",
   "输入地址查看命中规则和请求头。": "Enter URL to view matched rule and headers.",
   "命中前缀：": "Matched prefix:",

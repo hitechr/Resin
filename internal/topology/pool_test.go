@@ -950,3 +950,134 @@ func TestEphemeralCleaner_SkipsRecentCircuitBreak(t *testing.T) {
 		t.Fatal("recently circuit-broken node should not be evicted yet")
 	}
 }
+
+// --- publish-vs-probe race tests ---
+
+// newPrebuildRaceFixture wires two routable nodes (in distinct subscriptions)
+// under a 400ms reference-latency cap and returns an arm() hook. Once armed,
+// the next platform view build pushes the first node it evaluated over the
+// cap right after that evaluation, i.e. a probe result lands between the
+// pre-publish build and publish.
+func newPrebuildRaceFixture(t *testing.T) (*GlobalNodePool, map[string]node.Hash, func()) {
+	t.Helper()
+	subMgr := NewSubscriptionManager()
+	subs := []*subscription.Subscription{
+		subscription.NewSubscription("sub-a", "A", "url", true, false),
+		subscription.NewSubscription("sub-b", "B", "url", true, false),
+	}
+	for _, sub := range subs {
+		subMgr.Register(sub)
+	}
+
+	var mu sync.Mutex
+	armed := false
+	firstSub := ""
+	hashes := map[string]node.Hash{}
+	var pool *GlobalNodePool
+
+	lookup := func(subID string) *subscription.Subscription {
+		mu.Lock()
+		fire := false
+		if armed {
+			switch {
+			case firstSub == "":
+				firstSub = subID
+			case subID != firstSub:
+				armed = false
+				fire = true
+			}
+		}
+		victim := hashes[firstSub]
+		mu.Unlock()
+		if fire {
+			over := 401 * time.Millisecond
+			pool.RecordLatency(victim, "gstatic.com", &over)
+		}
+		return subMgr.Lookup(subID)
+	}
+
+	pool = NewGlobalNodePool(PoolConfig{
+		SubLookup:              lookup,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyAuthorities:     func() []string { return []string{"gstatic.com"} },
+		LatencyDecayWindow:     func() time.Duration { return time.Nanosecond },
+	})
+
+	for _, sub := range subs {
+		raw := []byte(`{"type":"ss","n":"` + sub.ID + `"}`)
+		h := node.HashFromRawOptions(raw)
+		sub.ManagedNodes().StoreNode(h, subscription.ManagedNode{Tags: []string{"node"}})
+		pool.AddNodeFromSub(h, raw, sub.ID)
+		entry, _ := pool.GetEntry(h)
+		ob := testutil.NewNoopOutbound()
+		entry.Outbound.Store(&ob)
+		entry.SetEgressIP(netip.MustParseAddr("9.9.9.9"))
+		pool.RecordResult(h, true)
+		under := 300 * time.Millisecond
+		pool.RecordLatency(h, "gstatic.com", &under)
+		mu.Lock()
+		hashes[sub.ID] = h
+		mu.Unlock()
+	}
+
+	arm := func() {
+		mu.Lock()
+		armed = true
+		firstSub = ""
+		mu.Unlock()
+	}
+	return pool, hashes, arm
+}
+
+func assertViewMatchesLatencyCap(t *testing.T, pool *GlobalNodePool, plat *platform.Platform, hashes map[string]node.Hash) {
+	t.Helper()
+	if got := plat.View().Size(); got != 1 {
+		t.Fatalf("published view size = %d, want 1 (node probed over the cap during pre-build must be excluded)", got)
+	}
+	for subID, h := range hashes {
+		entry, _ := pool.GetEntry(h)
+		avg, ok := node.AverageEWMAForDomainsMs(entry, []string{"gstatic.com"})
+		over := !ok || avg > 400
+		if plat.View().Contains(h) == over {
+			t.Fatalf("node %s (sub %s, avg=%v ok=%v) membership inconsistent with its latency", h.Hex(), subID, avg, ok)
+		}
+	}
+}
+
+func TestPool_ReplacePlatform_PublishReflectsProbeDuringPrebuild(t *testing.T) {
+	pool, hashes, arm := newPrebuildRaceFixture(t)
+
+	current := platform.NewPlatform("p-edit", "Edit", nil, nil)
+	current.MaxReferenceLatencyMs = 400
+	pool.RegisterPlatform(current)
+	pool.RebuildPlatform(current)
+	if got := current.View().Size(); got != 2 {
+		t.Fatalf("sanity: both nodes should be routable, got %d", got)
+	}
+
+	next := platform.NewPlatform("p-edit", "Edit", nil, nil)
+	next.MaxReferenceLatencyMs = 400
+	arm()
+	if err := pool.ReplacePlatform(next); err != nil {
+		t.Fatalf("ReplacePlatform: %v", err)
+	}
+	if got, _ := pool.GetPlatform("p-edit"); got != next {
+		t.Fatal("ReplacePlatform must publish the new platform object")
+	}
+	assertViewMatchesLatencyCap(t, pool, next, hashes)
+}
+
+func TestPool_PublishPlatform_ReflectsProbeDuringPrebuild(t *testing.T) {
+	pool, hashes, arm := newPrebuildRaceFixture(t)
+
+	plat := platform.NewPlatform("p-new", "New", nil, nil)
+	plat.MaxReferenceLatencyMs = 400
+	arm()
+	pool.PublishPlatform(plat)
+	if got, ok := pool.GetPlatform("p-new"); !ok || got != plat {
+		t.Fatal("PublishPlatform must register the platform")
+	}
+	assertViewMatchesLatencyCap(t, pool, plat, hashes)
+}

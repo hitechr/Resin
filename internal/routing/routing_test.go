@@ -2,6 +2,7 @@ package routing_test
 
 import (
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"regexp"
 	"sync"
@@ -498,4 +499,159 @@ func TestRestoreLeasesExists(t *testing.T) {
 	router := makeRouter(pool, nil)
 	// Just verify it doesn't panic on empty slice.
 	router.RestoreLeases(nil)
+}
+
+// ── reference-latency cap tests ─────────────────────────────────
+
+func setupLatencyLimitedPool(t testing.TB, limitMs int) (*topology.GlobalNodePool, *topology.SubscriptionManager) {
+	t.Helper()
+	subMgr := topology.NewSubscriptionManager()
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		GeoLookup:              func(_ netip.Addr) string { return "US" },
+		MaxLatencyTableEntries: 10,
+		MaxConsecutiveFailures: func() int { return 3 },
+		// A tiny decay window makes each probe sample replace the EWMA so
+		// limit crossings in these tests are deterministic.
+		LatencyDecayWindow: func() time.Duration { return time.Nanosecond },
+		LatencyAuthorities: func() []string { return []string{"cloudflare.com"} },
+	})
+
+	plat := platform.NewPlatform(platID, platName, []*regexp.Regexp{}, []string{})
+	plat.StickyTTLNs = int64(1 * time.Hour)
+	plat.MaxReferenceLatencyMs = limitMs
+	pool.RegisterPlatform(plat)
+
+	sub := subscription.NewSubscription("sub-1", "Test Sub", "https://example.com", true, false)
+	subMgr.Register(sub)
+	return pool, subMgr
+}
+
+func TestStickyLease_OverLimitNodeRotatesToQualifiedSameIPNode(t *testing.T) {
+	pool, subMgr := setupLatencyLimitedPool(t, 400)
+	hCurrent := makeRoutableNode(t, pool, subMgr, `{"cap":"current"}`, "10.0.0.1", "cloudflare.com", 350*time.Millisecond)
+	hSibling := makeRoutableNode(t, pool, subMgr, `{"cap":"sibling"}`, "10.0.0.1", "cloudflare.com", 500*time.Millisecond)
+
+	var events []routing.LeaseEvent
+	router := makeRouter(pool, &events)
+
+	// Only the qualifying node is routable, so the lease lands on it.
+	res1, err := router.RouteRequest(platName, "user-cap", "example.com")
+	if err != nil {
+		t.Fatalf("first route: %v", err)
+	}
+	if res1.NodeHash != hCurrent {
+		t.Fatalf("lease node = %s, want %s", res1.NodeHash.Hex(), hCurrent.Hex())
+	}
+
+	// Later authority probes push the leased node over the limit and the
+	// same-IP sibling under it.
+	over := 401 * time.Millisecond
+	under := 300 * time.Millisecond
+	pool.RecordLatency(hCurrent, "cloudflare.com", &over)
+	pool.RecordLatency(hSibling, "cloudflare.com", &under)
+
+	res2, err := router.RouteRequest(platName, "user-cap", "example.com")
+	if err != nil {
+		t.Fatalf("second route: %v", err)
+	}
+	if res2.NodeHash != hSibling {
+		t.Fatalf("rotated node = %s, want same-IP sibling %s", res2.NodeHash.Hex(), hSibling.Hex())
+	}
+	if res2.EgressIP != res1.EgressIP {
+		t.Fatalf("rotation must keep egress IP %s, got %s", res1.EgressIP, res2.EgressIP)
+	}
+	if res2.LeaseCreated {
+		t.Fatal("same-IP rotation must replace the lease, not create a new one")
+	}
+
+	foundReplace := false
+	for _, e := range events {
+		if e.Type == routing.LeaseReplace && e.Account == "user-cap" && e.NodeHash == hSibling {
+			foundReplace = true
+		}
+	}
+	if !foundReplace {
+		t.Fatal("expected LeaseReplace event for same-IP rotation")
+	}
+}
+
+func TestStickyLease_EmptyLimitedViewDoesNotBypassLimit(t *testing.T) {
+	pool, subMgr := setupLatencyLimitedPool(t, 400)
+	hOnly := makeRoutableNode(t, pool, subMgr, `{"cap":"only"}`, "10.0.0.2", "cloudflare.com", 350*time.Millisecond)
+
+	var events []routing.LeaseEvent
+	router := makeRouter(pool, &events)
+
+	res1, err := router.RouteRequest(platName, "user-empty", "example.com")
+	if err != nil {
+		t.Fatalf("first route: %v", err)
+	}
+	if res1.NodeHash != hOnly {
+		t.Fatalf("lease node = %s, want %s", res1.NodeHash.Hex(), hOnly.Hex())
+	}
+
+	over := 401 * time.Millisecond
+	pool.RecordLatency(hOnly, "cloudflare.com", &over)
+
+	_, err = router.RouteRequest(platName, "user-empty", "example.com")
+	if !errors.Is(err, routing.ErrNoAvailableNodes) {
+		t.Fatalf("expected ErrNoAvailableNodes once the limited view is empty, got %v", err)
+	}
+
+	foundRemove := false
+	for _, e := range events {
+		if e.Type == routing.LeaseRemove && e.Account == "user-empty" && e.NodeHash == hOnly {
+			foundRemove = true
+		}
+	}
+	if !foundRemove {
+		t.Fatal("expected LeaseRemove event when the leased node leaves the limited view")
+	}
+}
+
+func TestRouteRequest_ConcurrentWithLatencyLimitedRebuild(t *testing.T) {
+	pool, subMgr := setupLatencyLimitedPool(t, 400)
+	makeRoutableNode(t, pool, subMgr, `{"rebuild":"1"}`, "10.0.0.1", "cloudflare.com", 100*time.Millisecond)
+	makeRoutableNode(t, pool, subMgr, `{"rebuild":"2"}`, "10.0.0.2", "cloudflare.com", 100*time.Millisecond)
+
+	router := makeRouter(pool, nil)
+
+	// Both nodes qualify throughout, so routing must keep succeeding while the
+	// limited platform's view is rebuilt (the authority-list change path).
+	stop := make(chan struct{})
+	var mu sync.Mutex
+	var firstErr error
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := router.RouteRequest(platName, "", "example.com"); err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					return
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 500; i++ {
+		pool.RebuildLatencyLimitedPlatforms()
+	}
+	close(stop)
+	wg.Wait()
+
+	if firstErr != nil {
+		t.Fatalf("routing during a view rebuild failed: %v", firstErr)
+	}
 }

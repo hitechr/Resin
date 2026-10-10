@@ -667,6 +667,22 @@ export function PlatformDetailPage() {
                     </p>
                   </div>
 
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-edit-max-reference-latency">
+                      {t("最大参考延迟 (ms)")}
+                    </label>
+                    <Input
+                      id="detail-edit-max-reference-latency"
+                      inputMode="numeric"
+                      placeholder={t("例如 400，留空表示不限制")}
+                      invalid={Boolean(editForm.formState.errors.max_reference_latency_ms_text)}
+                      {...editForm.register("max_reference_latency_ms_text")}
+                    />
+                    {editForm.formState.errors.max_reference_latency_ms_text?.message ? (
+                      <p className="field-error">{t(editForm.formState.errors.max_reference_latency_ms_text.message)}</p>
+                    ) : null}
+                  </div>
+
                   <div className="platform-config-actions">
                     <Button type="submit" disabled={updateMutation.isPending}>
                       {updateMutation.isPending ? t("保存中...") : t("保存配置")}

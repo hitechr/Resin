@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,6 +105,7 @@ var platformPatchAllowedFields = map[string]bool{
 	"reverse_proxy_fixed_account_header":   true,
 	"allocation_policy":                    true,
 	"passive_circuit_breaker_disabled":     true,
+	"max_reference_latency_ms":             true,
 }
 
 var subscriptionPatchAllowedFields = map[string]bool{
@@ -160,7 +162,8 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	defer s.configMu.Unlock()
 
 	// 3. Deep-copy current config → apply patch.
-	newCfg := copyRuntimeConfig(s.RuntimeCfg.Load())
+	oldCfg := s.RuntimeCfg.Load()
+	newCfg := copyRuntimeConfig(oldCfg)
 	if verr := parseRuntimeConfigPatch(patchJSON, newCfg); verr != nil {
 		return nil, verr
 	}
@@ -191,6 +194,12 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	// 6. Atomic swap.
 	s.RuntimeCfg.Store(newCfg)
 	s.configVersion = newVersion
+
+	// 7. Authority changes move reference-latency averages; recompute the
+	// views of platforms whose routable set depends on them.
+	if s.Pool != nil && (oldCfg == nil || !slices.Equal(oldCfg.LatencyAuthorities, newCfg.LatencyAuthorities)) {
+		s.Pool.RebuildLatencyLimitedPlatforms()
+	}
 
 	return newCfg, nil
 }

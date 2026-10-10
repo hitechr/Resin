@@ -71,6 +71,7 @@ func NewConfiguredPlatform(
 	fixedAccountHeader string,
 	allocationPolicy string,
 	passiveCircuitBreakerDisabled bool,
+	maxReferenceLatencyMs int,
 ) *Platform {
 	normalizedFixedHeaders, fixedHeaders, err := NormalizeFixedAccountHeaders(fixedAccountHeader)
 	if err != nil {
@@ -85,6 +86,7 @@ func NewConfiguredPlatform(
 	plat.ReverseProxyFixedAccountHeaders = append([]string(nil), fixedHeaders...)
 	plat.AllocationPolicy = ParseAllocationPolicy(allocationPolicy)
 	plat.PassiveCircuitBreakerDisabled = passiveCircuitBreakerDisabled
+	plat.MaxReferenceLatencyMs = maxReferenceLatencyMs
 	return plat
 }
 
@@ -141,5 +143,6 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		fixedHeader,
 		mp.AllocationPolicy,
 		mp.PassiveCircuitBreakerDisabled,
+		mp.MaxReferenceLatencyMs,
 	), nil
 }
