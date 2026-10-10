@@ -2,6 +2,7 @@ package ipquality
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -10,6 +11,164 @@ import (
 
 	"golang.org/x/time/rate"
 )
+
+func TestCoordinatorJobWriteFailureDoesNotRejectAdmission(t *testing.T) {
+	store := &memoryJobStore{jobs: make(map[string][]byte), failOnce: true}
+	c := NewCoordinator(NewService(nil), nil)
+	defer c.Stop()
+	if err := c.AttachJobStore(store); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.StartManual(nil)
+	if err != nil || first.EndedAt == nil {
+		t.Fatalf("admission after failed write: %+v %v", first, err)
+	}
+	second, err := c.StartManual(nil)
+	if err != nil || second.EndedAt == nil {
+		t.Fatalf("next admission: %+v %v", second, err)
+	}
+	if _, ok := store.jobs[second.ID]; !ok {
+		t.Fatal("next snapshot not persisted")
+	}
+}
+
+func TestCoordinatorRestoresInterruptedJobs(t *testing.T) {
+	store := &memoryJobStore{jobs: make(map[string][]byte)}
+	s := NewService(lookupFunc(func(ctx context.Context, ip string) (Result, error) {
+		<-ctx.Done()
+		return Result{}, ctx.Err()
+	}))
+	first := NewCoordinator(s, nil)
+	defer first.Stop()
+	if err := first.AttachJobStore(store); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := first.StartManual(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := first.StartManual([]string{"8.8.8.8", "1.1.1.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model an abrupt restart: do not invoke Stop before the next coordinator loads snapshots.
+	second := NewCoordinator(NewService(nil), nil)
+	defer second.Stop()
+	if err := second.AttachJobStore(store); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := second.Status(active.ID)
+	if !ok || !got.Canceled || got.Deferred != 2 || got.EndedAt == nil || got.Total != 2 {
+		t.Fatalf("interrupted job: %+v found=%v", got, ok)
+	}
+	if got, ok := second.Status(terminal.ID); !ok || got.EndedAt == nil || got.Canceled {
+		t.Fatalf("terminal job: %+v found=%v", got, ok)
+	}
+	first.Stop()
+}
+
+func TestCoordinatorPersistsCancellation(t *testing.T) {
+	store := &memoryJobStore{jobs: make(map[string][]byte)}
+	started := make(chan struct{})
+	s := NewService(lookupFunc(func(ctx context.Context, ip string) (Result, error) {
+		close(started)
+		<-ctx.Done()
+		return Result{}, ctx.Err()
+	}))
+	c := NewCoordinator(s, nil)
+	defer c.Stop()
+	if err := c.AttachJobStore(store); err != nil {
+		t.Fatal(err)
+	}
+	job, err := c.StartManual([]string{"8.8.8.8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if !c.Cancel(job.ID) {
+		t.Fatal("cancel failed")
+	}
+	var persisted Job
+	if err := json.Unmarshal(store.jobs[job.ID], &persisted); err != nil || !persisted.Canceled || persisted.Deferred != 1 || persisted.EndedAt == nil {
+		t.Fatalf("persisted cancel: %+v err=%v", persisted, err)
+	}
+}
+
+func TestCoordinatorPersistsCancelAndPrunesJobs(t *testing.T) {
+	store := &memoryJobStore{jobs: make(map[string][]byte)}
+	c := NewCoordinator(NewService(nil), nil)
+	defer c.Stop()
+	if err := c.AttachJobStore(store); err != nil {
+		t.Fatal(err)
+	}
+	var oldest string
+	for i := 0; i <= MaxJobs; i++ {
+		job, err := c.StartManual(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			oldest = job.ID
+		}
+	}
+	if len(store.jobs) != MaxJobs {
+		t.Fatalf("stored jobs: %d", len(store.jobs))
+	}
+	if _, found := c.Status(oldest); found {
+		t.Fatal("oldest terminal job not pruned")
+	}
+	if _, found := store.jobs[oldest]; found {
+		t.Fatal("oldest persisted job not pruned")
+	}
+}
+
+type memoryJobStore struct {
+	jobs     map[string][]byte
+	failOnce bool
+}
+
+func (m *memoryJobStore) SaveJob(id string, payload []byte, _ time.Time) error {
+	if m.failOnce {
+		m.failOnce = false
+		return errors.New("disk unavailable")
+	}
+	m.jobs[id] = append([]byte(nil), payload...)
+	return nil
+}
+func (m *memoryJobStore) DeleteJob(id string) error { delete(m.jobs, id); return nil }
+func (m *memoryJobStore) LoadJobs() ([][]byte, error) {
+	result := make([][]byte, 0, len(m.jobs))
+	for _, payload := range m.jobs {
+		result = append(result, payload)
+	}
+	return result, nil
+}
+
+func TestCoordinatorRestoreBound(t *testing.T) {
+	store := &memoryJobStore{jobs: make(map[string][]byte)}
+	for i := 0; i < MaxJobs+2; i++ {
+		job := Job{ID: fmt.Sprintf("%03d", i), Total: 1, StartedAt: time.Unix(int64(i), 0)}
+		payload, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.jobs[job.ID] = payload
+	}
+	c := NewCoordinator(NewService(nil), nil)
+	defer c.Stop()
+	if err := c.AttachJobStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := c.Status("000"); found {
+		t.Fatal("old job restored")
+	}
+	if _, found := c.Status("129"); !found {
+		t.Fatal("new job lost")
+	}
+	if len(store.jobs) != MaxJobs {
+		t.Fatalf("stored rows: %d", len(store.jobs))
+	}
+}
 
 func awaitJob(t *testing.T, c *Coordinator, id string) Job {
 	t.Helper()

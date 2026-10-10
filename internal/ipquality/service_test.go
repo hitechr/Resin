@@ -180,6 +180,131 @@ func (m mapStore) SaveQuality(ip string, payload []byte, _ time.Time) error {
 
 func (m mapStore) LoadQuality() (map[string][]byte, error) { return m, nil }
 
+func (m mapStore) ReadQuality(ip string) ([]byte, bool, error) {
+	payload, ok := m[ip]
+	return payload, ok, nil
+}
+
+func TestServicePersistFailureDoesNotFailLookup(t *testing.T) {
+	store := &failingQualityStore{mapStore: mapStore{}, fail: true}
+	s := NewService(lookupFunc(func(_ context.Context, ip string) (Result, error) {
+		return Result{IP: ip}, nil
+	}))
+	if err := s.AttachStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Check(context.Background(), "8.8.8.8"); err != nil {
+		t.Fatalf("write failure failed lookup: %v", err)
+	}
+	if _, found, _ := s.Cached("8.8.8.8"); !found {
+		t.Fatal("write failure removed in-memory value")
+	}
+	store.fail = false
+	s.limiter = rate.NewLimiter(1000, 1)
+	if _, err := s.Check(context.Background(), "8.8.8.8"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.mapStore) != 1 {
+		t.Fatal("next successful check did not retry persistence")
+	}
+}
+
+type failingQualityStore struct {
+	mapStore
+	fail bool
+}
+
+func (s *failingQualityStore) SaveQuality(ip string, payload []byte, expiresAt time.Time) error {
+	if s.fail {
+		return errors.New("disk unavailable")
+	}
+	return s.mapStore.SaveQuality(ip, payload, expiresAt)
+}
+
+func TestServiceReadThroughAfterEviction(t *testing.T) {
+	now := time.Now()
+	store := mapStore{}
+	var calls atomic.Int32
+	s := NewService(lookupFunc(func(_ context.Context, ip string) (Result, error) {
+		calls.Add(1)
+		return Result{IP: ip}, nil
+	}))
+	s.now = func() time.Time { return now }
+	if err := s.AttachStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Check(context.Background(), "8.8.8.8"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= MaxEntries; i++ {
+		s.cache.Add(fmt.Sprintf("9.%d.%d.%d", i/65536, i/256%256, i%256), Result{})
+	}
+	result, found, fresh := s.Cached("8.8.8.8")
+	if !found || !fresh || result.IP != "8.8.8.8" || calls.Load() != 1 {
+		t.Fatalf("read-through: %+v found=%v fresh=%v calls=%d", result, found, fresh, calls.Load())
+	}
+	if s.cache.Len() != MaxEntries {
+		t.Fatalf("LRU size: %d", s.cache.Len())
+	}
+	now = now.Add(FreshFor)
+	s.cache.Remove("8.8.8.8")
+	if _, found, _ := s.Cached("8.8.8.8"); found {
+		t.Fatal("expired disk row was revived")
+	}
+}
+
+func TestServiceReadThroughRejectsInvalidRows(t *testing.T) {
+	for _, payload := range [][]byte{[]byte("bad"), []byte(`{"ip":"1.1.1.1"}`), []byte(`{"ip":"8.8.8.8","expires_at":"2000-01-01T00:00:00Z"}`)} {
+		store := mapStore{"8.8.8.8": payload}
+		s := NewService(nil)
+		if err := s.AttachStore(store); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, _ := s.Cached("8.8.8.8"); found {
+			t.Fatalf("invalid row accepted: %s", payload)
+		}
+	}
+}
+
+type blockedReadStore struct {
+	mapStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockedReadStore) ReadQuality(ip string) ([]byte, bool, error) {
+	close(b.entered)
+	<-b.release
+	return b.mapStore.ReadQuality(ip)
+}
+
+func TestServiceReadThroughDoesNotOverwriteLookup(t *testing.T) {
+	store := &blockedReadStore{mapStore: mapStore{}, entered: make(chan struct{}), release: make(chan struct{})}
+	s := NewService(lookupFunc(func(_ context.Context, ip string) (Result, error) {
+		score := 99.0
+		return Result{IP: ip, Score: &score}, nil
+	}))
+	if err := s.AttachStore(store); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := json.Marshal(Result{IP: "8.8.8.8", ExpiresAt: time.Now().Add(time.Hour)})
+	store.mapStore["8.8.8.8"] = old
+	read := make(chan struct{})
+	go func() { s.Cached("8.8.8.8"); close(read) }()
+	<-store.entered
+	check := make(chan error, 1)
+	go func() { _, err := s.Check(context.Background(), "8.8.8.8"); check <- err }()
+	close(store.release)
+	<-read
+	if err := <-check; err != nil {
+		t.Fatal(err)
+	}
+	result, found, _ := s.Cached("8.8.8.8")
+	if !found || result.Score == nil || *result.Score != 99 {
+		t.Fatalf("newer lookup lost: %+v", result)
+	}
+}
+
 func TestServicePersistsAndRestoresCacheThroughStore(t *testing.T) {
 	store := mapStore{}
 	score := 42.0

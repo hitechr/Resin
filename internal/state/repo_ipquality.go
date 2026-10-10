@@ -2,6 +2,7 @@ package state
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -26,6 +27,16 @@ func (r *IPQualityRepo) SaveQuality(ip string, payload []byte, expiresAt time.Ti
 	return err
 }
 
+// ReadQuality returns one persisted payload without contacting the provider.
+func (r *IPQualityRepo) ReadQuality(ip string) ([]byte, bool, error) {
+	var payload []byte
+	err := r.db.QueryRow("SELECT payload FROM ip_quality_cache WHERE ip = ?", ip).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	return payload, err == nil, err
+}
+
 // LoadQuality returns all persisted payloads keyed by IP.
 func (r *IPQualityRepo) LoadQuality() (map[string][]byte, error) {
 	rows, err := r.db.Query("SELECT ip, payload FROM ip_quality_cache")
@@ -44,6 +55,44 @@ func (r *IPQualityRepo) LoadQuality() (map[string][]byte, error) {
 		result[ip] = payload
 	}
 	return result, rows.Err()
+}
+
+// SaveJob writes a snapshot and keeps only the newest 128 job records.
+func (r *IPQualityRepo) SaveJob(id string, payload []byte, startedAt time.Time) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO ip_quality_jobs (id, payload, started_at_ns) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, started_at_ns = excluded.started_at_ns", id, payload, startedAt.UnixNano()); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM ip_quality_jobs WHERE id NOT IN (SELECT id FROM ip_quality_jobs ORDER BY started_at_ns DESC, id DESC LIMIT 128)"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *IPQualityRepo) DeleteJob(id string) error {
+	_, err := r.db.Exec("DELETE FROM ip_quality_jobs WHERE id = ?", id)
+	return err
+}
+
+func (r *IPQualityRepo) LoadJobs() ([][]byte, error) {
+	rows, err := r.db.Query("SELECT payload FROM ip_quality_jobs ORDER BY started_at_ns, id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs [][]byte
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, payload)
+	}
+	return jobs, rows.Err()
 }
 
 // DeleteExpiredIPQuality removes rows whose freshness window has lapsed.

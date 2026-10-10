@@ -491,6 +491,11 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		a.ipCoordinator = ipquality.NewCoordinator(cpService.IPQuality, func(ip string) bool {
 			return allowedIP(cpService, ip)
 		})
+		if engine.IPQualityRepo != nil {
+			if err := a.ipCoordinator.AttachJobStore(engine.IPQualityRepo); err != nil {
+				log.Printf("IP quality job restore (non-fatal): %v", err)
+			}
+		}
 		cpService.IPCoordinator = a.ipCoordinator
 		if a.envCfg.IPQualityAutoEnabled {
 			a.ipQualityAuto = newIPQualityAutoRuntime(cpService, a.ipCoordinator)

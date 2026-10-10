@@ -46,6 +46,19 @@ func (s *Service) Cached(raw string) (Result, bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	value, ok := s.cache.Get(ip)
+	if !ok && s.store != nil {
+		payload, found, err := s.store.ReadQuality(ip)
+		if err != nil {
+			return Result{}, false, false
+		}
+		if found {
+			result, fresh := s.decodeFresh(ip, payload)
+			if fresh {
+				s.cache.Add(ip, result)
+				return result, true, true
+			}
+		}
+	}
 	if !ok {
 		return Result{}, false, false
 	}

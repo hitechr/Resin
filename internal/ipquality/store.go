@@ -10,7 +10,19 @@ import (
 // safe for concurrent use; SaveQuality is best-effort write-through.
 type Store interface {
 	SaveQuality(ip string, payload []byte, expiresAt time.Time) error
+	ReadQuality(ip string) ([]byte, bool, error)
 	LoadQuality() (map[string][]byte, error)
+}
+
+func (s *Service) decodeFresh(ip string, payload []byte) (Result, bool) {
+	var result Result
+	if json.Unmarshal(payload, &result) != nil || result.IP != ip {
+		return Result{}, false
+	}
+	if normalized, err := PublicIP(ip); err != nil || normalized != ip {
+		return Result{}, false
+	}
+	return result, s.now().Before(result.ExpiresAt)
 }
 
 // AttachStore restores previously persisted results into the in-memory cache
@@ -27,14 +39,8 @@ func (s *Service) AttachStore(store Store) error {
 	}
 	s.mu.Lock()
 	for ip, payload := range rows {
-		var result Result
-		if json.Unmarshal(payload, &result) != nil || result.IP != ip {
-			continue
-		}
-		if normalized, err := PublicIP(ip); err != nil || normalized != ip {
-			continue
-		}
-		if !s.now().Before(result.ExpiresAt) {
+		result, fresh := s.decodeFresh(ip, payload)
+		if !fresh {
 			continue
 		}
 		s.cache.Add(ip, result)

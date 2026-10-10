@@ -53,6 +53,7 @@ type QueueSnapshot struct {
 // Callbacks passed to EnqueueBackground must not wait for a provider response.
 type Coordinator struct {
 	service    *Service
+	jobStore   JobStore
 	allowed    func(string) bool
 	maxPending int
 	now        func() time.Time
@@ -217,6 +218,7 @@ func (c *Coordinator) Cancel(id string) bool {
 	job.Deferred = job.Total - job.FreshSkipped - job.Completed - job.Failed
 	ended := c.now().UTC()
 	job.EndedAt = &ended
+	c.saveJob(job)
 	for ip, work := range c.pending {
 		delete(work.jobs, id)
 		if len(work.jobs) != 0 {
@@ -247,18 +249,25 @@ func (c *Coordinator) finishJob(job *Job) {
 		ended := c.now().UTC()
 		job.EndedAt = &ended
 	}
+	c.saveJob(job)
 }
 
 func (c *Coordinator) pruneJobs() {
-	kept := c.jobOrder[:0]
-	for _, id := range c.jobOrder {
-		if len(c.jobs) >= MaxJobs && c.jobs[id].EndedAt != nil {
-			delete(c.jobs, id)
-			continue
+	for len(c.jobs) >= MaxJobs {
+		removed := false
+		for i, id := range c.jobOrder {
+			if c.jobs[id].EndedAt != nil {
+				delete(c.jobs, id)
+				c.jobOrder = slices.Delete(c.jobOrder, i, i+1)
+				c.deleteJob(id)
+				removed = true
+				break
+			}
 		}
-		kept = append(kept, id)
+		if !removed {
+			break
+		}
 	}
-	c.jobOrder = kept
 }
 
 func (c *Coordinator) nextWork(manualOnly bool) (*queuedIP, time.Duration) {
