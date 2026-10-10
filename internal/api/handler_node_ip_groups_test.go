@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Resinat/Resin/internal/ipquality"
+	"github.com/Resinat/Resin/internal/node"
 	"github.com/Resinat/Resin/internal/subscription"
 )
 
@@ -27,6 +28,16 @@ func TestNodeIPGroupsFilteredListSortBeforePaginationAndDetails(t *testing.T) {
 	addNodeForNodeListTest(t, cp, subA, `{"type":"ss","server":"c"}`, "1.1.1.1")
 	addNodeForNodeListTest(t, cp, subB, `{"type":"ss","server":"d"}`, "4.4.4.4")
 	addNodeForNodeListTest(t, cp, subA, `{"type":"ss","server":"e"}`, "")
+	// The test GeoIP service is a no-op, so set explicit egress regions.
+	for _, tc := range []struct{ raw, region string }{
+		{`{"type":"ss","server":"a"}`, "us"},
+		{`{"type":"ss","server":"b"}`, "us"},
+		{`{"type":"ss","server":"c"}`, "jp"},
+	} {
+		if entry, ok := cp.Pool.GetEntry(node.HashFromRawOptions([]byte(tc.raw))); ok {
+			entry.SetEgressRegion(tc.region)
+		}
+	}
 	path := "/api/v1/node-ip-groups?subscription_id=" + subA.ID
 	rec := doJSONRequest(t, srv, http.MethodGet, path+"&sort_by=ip&sort_order=desc&limit=1&offset=1", nil, true)
 	if rec.Code != http.StatusOK {

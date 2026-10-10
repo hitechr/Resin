@@ -79,6 +79,34 @@ func TestNodeIPGroupDetailTracksChangedIP(t *testing.T) {
 	}
 }
 
+func TestNodeIPGroupsAggregateBestLatencyHealthAndProbeTime(t *testing.T) {
+	latency := func(ms float64) *float64 { return &ms }
+	nodes := []NodeSummary{
+		{EgressIP: "8.8.8.8", Enabled: true, HasOutbound: true, ReferenceLatencyMs: latency(120), LastLatencyProbeAttempt: "2026-10-09T01:00:00Z"},
+		{EgressIP: "8.8.8.8", Enabled: true, HasOutbound: true, ReferenceLatencyMs: latency(80), LastLatencyProbeAttempt: "2026-10-09T02:00:00Z"},
+		{EgressIP: "8.8.8.8", Enabled: true, ReferenceLatencyMs: latency(30), LastLatencyProbeAttempt: "2026-10-09T03:00:00Z"},
+		{EgressIP: "1.1.1.1", Enabled: true, ReferenceLatencyMs: latency(50)},
+	}
+	byKey := make(map[string]NodeIPGroup)
+	for _, group := range projectNodeIPGroups(nodes, nil) {
+		byKey[group.Key] = group
+	}
+	shared := byKey["8.8.8.8"]
+	if shared.ReferenceLatencyMs == nil || *shared.ReferenceLatencyMs != 80 {
+		t.Fatalf("latency must be the minimum over healthy members: %+v", shared)
+	}
+	if !shared.Healthy {
+		t.Fatalf("group with a healthy member must be healthy: %+v", shared)
+	}
+	if shared.LastLatencyProbeAttempt != "2026-10-09T03:00:00Z" {
+		t.Fatalf("probe time must be the most recent member attempt: %+v", shared)
+	}
+	unhealthy := byKey["1.1.1.1"]
+	if unhealthy.Healthy || unhealthy.ReferenceLatencyMs != nil || unhealthy.LastLatencyProbeAttempt != "" {
+		t.Fatalf("unhealthy-only group must not expose latency: %+v", unhealthy)
+	}
+}
+
 func TestNodeIPGroupsRegionUsesMajorityMemberRegion(t *testing.T) {
 	nodes := []NodeSummary{
 		{EgressIP: "8.8.8.8", Region: "us"},

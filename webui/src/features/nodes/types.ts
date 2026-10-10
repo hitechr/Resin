@@ -21,6 +21,9 @@ export type NodeIPGroup = {
   ip: string;
   region: string;
   matched_node_count: number;
+  reference_latency_ms?: number;
+  healthy: boolean;
+  last_latency_probe_attempt: string;
   score: number | null;
   risk: number | null;
   risk_version: string;

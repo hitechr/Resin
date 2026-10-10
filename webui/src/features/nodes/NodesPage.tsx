@@ -559,6 +559,32 @@ export function NodesPage() {
     col.accessor("matched_node_count", {
       header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("matched_nodes")}>{t("匹配节点数")} <span>{sortIndicator(sortBy === "matched_nodes", sortOrder)}</span></button>,
     }),
+    col.display({
+      id: "reference_latency_ms",
+      header: t("参考延迟"),
+      cell: (info) => {
+        const group = info.row.original;
+        if (!group.healthy || group.reference_latency_ms == null || !Number.isFinite(group.reference_latency_ms)) {
+          return "-";
+        }
+        return (
+          <span style={{ color: referenceLatencyColor(group.reference_latency_ms), fontWeight: 600 }}>
+            {formatLatency(group.reference_latency_ms)}
+          </span>
+        );
+      },
+    }),
+    col.accessor("last_latency_probe_attempt", {
+      header: t("上次探测"),
+      cell: (info) => formatRelativeTime(info.getValue()),
+    }),
+    col.display({
+      id: "health",
+      header: t("状态"),
+      cell: (info) => info.row.original.healthy
+        ? <Badge variant="success">{t("健康")}</Badge>
+        : <Badge variant="muted">{t("无健康节点")}</Badge>,
+    }),
     col.accessor("risk", {
       header: () => <button type="button" className="table-sort-btn" onClick={() => changeSort("risk")}>{t("账户风险（越高风险越大）")} <span>{sortIndicator(sortBy === "risk", sortOrder)}</span></button>,
       cell: (info) => info.getValue() ?? t("未知"),

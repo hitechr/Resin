@@ -12,17 +12,20 @@ import (
 const UnresolvedIPGroupKey = "unresolved"
 
 type NodeIPGroup struct {
-	Key              string     `json:"key"`
-	IP               string     `json:"ip"`
-	Region           string     `json:"region"`
-	MatchedNodeCount int        `json:"matched_node_count"`
-	Score            *float64   `json:"score"`
-	Risk             *float64   `json:"risk"`
-	RiskVersion      string     `json:"risk_version"`
-	Residential      *bool      `json:"residential"`
-	ASN              string     `json:"asn"`
-	State            string     `json:"state"`
-	ObservedAt       *time.Time `json:"observed_at"`
+	Key                     string     `json:"key"`
+	IP                      string     `json:"ip"`
+	Region                  string     `json:"region"`
+	MatchedNodeCount        int        `json:"matched_node_count"`
+	ReferenceLatencyMs      *float64   `json:"reference_latency_ms,omitempty"`
+	Healthy                 bool       `json:"healthy"`
+	LastLatencyProbeAttempt string     `json:"last_latency_probe_attempt,omitempty"`
+	Score                   *float64   `json:"score"`
+	Risk                    *float64   `json:"risk"`
+	RiskVersion             string     `json:"risk_version"`
+	Residential             *bool      `json:"residential"`
+	ASN                     string     `json:"asn"`
+	State                   string     `json:"state"`
+	ObservedAt              *time.Time `json:"observed_at"`
 }
 
 func nodeIPGroupKey(raw string) string {
@@ -64,6 +67,19 @@ func projectNodeIPGroups(nodes []NodeSummary, cached func(string) (ipquality.Res
 			byIP[key] = group
 		}
 		group.MatchedNodeCount++
+		if n.IsHealthyAndEnabled() {
+			group.Healthy = true
+			if n.ReferenceLatencyMs != nil && (group.ReferenceLatencyMs == nil || *n.ReferenceLatencyMs < *group.ReferenceLatencyMs) {
+				latency := *n.ReferenceLatencyMs
+				group.ReferenceLatencyMs = &latency
+			}
+		}
+		if candidate := mustParseRFC3339(n.LastLatencyProbeAttempt); !candidate.IsZero() {
+			current := mustParseRFC3339(group.LastLatencyProbeAttempt)
+			if current.IsZero() || candidate.After(current) {
+				group.LastLatencyProbeAttempt = n.LastLatencyProbeAttempt
+			}
+		}
 		if region := strings.ToUpper(strings.TrimSpace(n.Region)); region != "" {
 			votes := regionVotes[key]
 			if votes == nil {
@@ -95,6 +111,14 @@ func majorityRegion(votes map[string]int) (string, bool) {
 		return "", false
 	}
 	return best, true
+}
+
+func mustParseRFC3339(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 func (s *ControlPlaneService) ListNodeIPGroups(filters NodeFilters) ([]NodeIPGroup, error) {

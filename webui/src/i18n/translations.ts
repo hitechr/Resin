@@ -10,6 +10,7 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "IP 详情 {{ip}}": "IP details {{ip}}",
   "匹配节点 {{count}}": "{{count}} matching nodes",
   "匹配节点数": "Matching nodes",
+  "无健康节点": "No healthy node",
   "共 {{total}} 个 IP 分组，{{public}} 个公网 IP": "{{total}} IP groups, {{public}} public IPs",
   "后台检查未排队 {{count}} 次": "{{count}} background IP checks deferred",
   "账户风险（越高风险越大）": "Account risk (higher is worse)",
