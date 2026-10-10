@@ -23,7 +23,7 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "已取消": "Canceled",
   "取消批量检查": "Cancel batch check",
   "任务状态已丢失，请重新发起": "Job status was lost after a restart; start a new batch",
-  "超过单次检查的 1000 个 IP 上限": "More than 1,000 distinct IPs in this batch",
+  "超过单次检查的 10000 个 IP 上限": "More than 10,000 distinct IPs in this batch",
   "检查队列已满，请稍后重试": "Check queue is full; try again later",
   "检查服务正在停止": "Check service is stopping",
   "检查 IP 质量": "Check IP quality",

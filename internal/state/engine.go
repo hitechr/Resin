@@ -34,6 +34,7 @@ type CacheReaders struct {
 type StateEngine struct {
 	*StateRepo
 	*CacheRepo
+	*IPQualityRepo
 
 	dirtyNodesStatic       *DirtySet[string]
 	dirtyNodesDynamic      *DirtySet[string]

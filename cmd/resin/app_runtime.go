@@ -393,6 +393,14 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 
 	if a.envCfg.IPQualityEnabled {
 		cpService.IPQuality = ipquality.NewService(ipquality.NewClient(a.envCfg.IPQualityEndpoint, nil))
+		if engine.IPQualityRepo != nil {
+			if err := engine.IPQualityRepo.DeleteExpiredIPQuality(time.Now().UnixNano()); err != nil {
+				log.Printf("IP quality cache cleanup (non-fatal): %v", err)
+			}
+			if err := cpService.IPQuality.AttachStore(engine.IPQualityRepo); err != nil {
+				log.Printf("IP quality cache restore (non-fatal): %v", err)
+			}
+		}
 	}
 
 	apiSrv := api.NewServerWithAddress(

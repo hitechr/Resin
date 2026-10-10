@@ -2,6 +2,7 @@ package ipquality
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -167,6 +168,60 @@ func TestServiceCancelLastWaiterStopsProvider(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("provider request was not canceled")
+	}
+}
+
+type mapStore map[string][]byte
+
+func (m mapStore) SaveQuality(ip string, payload []byte, _ time.Time) error {
+	m[ip] = payload
+	return nil
+}
+
+func (m mapStore) LoadQuality() (map[string][]byte, error) { return m, nil }
+
+func TestServicePersistsAndRestoresCacheThroughStore(t *testing.T) {
+	store := mapStore{}
+	score := 42.0
+	first := NewService(lookupFunc(func(_ context.Context, ip string) (Result, error) {
+		return Result{IP: ip, Score: &score}, nil
+	}))
+	if err := first.AttachStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Check(context.Background(), "8.8.8.8"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store) != 1 {
+		t.Fatalf("persisted rows: %d", len(store))
+	}
+
+	// A restarted process restores the persisted rows into its LRU.
+	second := NewService(lookupFunc(func(_ context.Context, ip string) (Result, error) {
+		return Result{}, errors.New("provider must not be called")
+	}))
+	if err := second.AttachStore(store); err != nil {
+		t.Fatal(err)
+	}
+	result, ok, fresh := second.Cached("8.8.8.8")
+	if !ok || !fresh || result.Score == nil || *result.Score != 42 {
+		t.Fatalf("restored entry: %+v ok=%v fresh=%v", result, ok, fresh)
+	}
+}
+
+func TestServiceRestoreSkipsExpiredEntries(t *testing.T) {
+	expired := time.Now().Add(-time.Hour)
+	payload, err := json.Marshal(Result{IP: "8.8.8.8", ExpiresAt: expired})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := mapStore{"8.8.8.8": payload}
+	s := NewService(nil)
+	if err := s.AttachStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.Cached("8.8.8.8"); ok {
+		t.Fatal("expired persisted entry must not be restored")
 	}
 }
 

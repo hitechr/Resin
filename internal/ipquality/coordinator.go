@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const MaxBatchIPs = 1000
+const MaxBatchIPs = 10000
 const MaxPendingIPs = 10000
 const MaxJobs = 128
 

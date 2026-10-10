@@ -23,6 +23,7 @@ type lookupFlight struct {
 
 type Service struct {
 	client    Lookup
+	store     Store
 	cache     *lru.Cache
 	mu        sync.Mutex
 	flightsMu sync.Mutex
@@ -171,5 +172,6 @@ func (s *Service) lookup(ctx context.Context, ip string, queued bool, canStart f
 	s.mu.Lock()
 	s.cache.Add(ip, result)
 	s.mu.Unlock()
+	s.persistQuality(result)
 	return result, nil
 }

@@ -20,7 +20,7 @@ func writeIPBatchError(w http.ResponseWriter, err error) {
 	var svcErr *service.ServiceError
 	switch {
 	case errors.Is(err, ipquality.ErrBatchTooLarge):
-		WriteError(w, http.StatusRequestEntityTooLarge, "IP_QUALITY_BATCH_TOO_LARGE", "filtered pool exceeds 1000 distinct public IPs")
+		WriteError(w, http.StatusRequestEntityTooLarge, "IP_QUALITY_BATCH_TOO_LARGE", "filtered pool exceeds 10000 distinct public IPs")
 	case errors.Is(err, ipquality.ErrQueueFull):
 		WriteError(w, http.StatusTooManyRequests, "IP_QUALITY_QUEUE_FULL", "IP quality queue is full; retry later")
 	case errors.Is(err, ipquality.ErrCoordinatorStopped):

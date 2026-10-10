@@ -70,6 +70,7 @@ func PersistenceBootstrap(stateDir, cacheDir string) (engine *StateEngine, close
 	stateRepo := newStateRepo(stateDB)
 	cacheRepo := newCacheRepo(cacheDB)
 	engine = newStateEngine(stateRepo, cacheRepo)
+	engine.IPQualityRepo = newIPQualityRepo(cacheDB)
 
 	return engine, &persistenceCloser{stateDB: stateDB, cacheDB: cacheDB}, nil
 }
